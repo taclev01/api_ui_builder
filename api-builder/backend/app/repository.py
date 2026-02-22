@@ -60,21 +60,87 @@ def get_workflow(conn: Connection, workflow_id: UUID) -> dict[str, Any] | None:
         return cur.fetchone()
 
 
+def get_workflow_version(conn: Connection, workflow_version_id: UUID) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, workflow_id, version_number, graph_json, is_published FROM workflow_versions WHERE id = %s",
+            (workflow_version_id,),
+        )
+        return cur.fetchone()
+
+
+def get_latest_published_workflow_version(conn: Connection, workflow_id: UUID) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, workflow_id, version_number, graph_json, is_published
+            FROM workflow_versions
+            WHERE workflow_id = %s AND is_published = TRUE
+            ORDER BY version_number DESC
+            LIMIT 1
+            """,
+            (workflow_id,),
+        )
+        return cur.fetchone()
+
+
+def get_execution_by_idempotency_key(conn: Connection, idempotency_key: str) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
+                   parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
+            FROM executions
+            WHERE idempotency_key = %s
+            LIMIT 1
+            """,
+            (idempotency_key,),
+        )
+        return cur.fetchone()
+
+
 def create_execution(
     conn: Connection,
     *,
     workflow_version_id: UUID,
     input_json: dict[str, Any],
     debug_mode: bool,
+    parent_execution_id: UUID | None,
+    trigger_type: str | None,
+    trigger_payload: dict[str, Any],
+    idempotency_key: str | None,
+    correlation_id: str | None,
 ) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO executions(workflow_version_id, status, started_at, debug_mode, input_json)
-            VALUES (%s, 'running', now(), %s, %s)
-            RETURNING id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id
+            INSERT INTO executions(
+              workflow_version_id,
+              status,
+              started_at,
+              debug_mode,
+              current_node_id,
+              input_json,
+              parent_execution_id,
+              trigger_type,
+              trigger_payload,
+              idempotency_key,
+              correlation_id
+            )
+            VALUES (%s, 'running', now(), %s, NULL, %s, %s, %s, %s, %s, %s)
+            RETURNING id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
+                      parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
             """,
-            (workflow_version_id, debug_mode, input_json),
+            (
+                workflow_version_id,
+                debug_mode,
+                input_json,
+                parent_execution_id,
+                trigger_type,
+                trigger_payload,
+                idempotency_key,
+                correlation_id,
+            ),
         )
         return cur.fetchone()
 
@@ -83,20 +149,12 @@ def get_execution(conn: Connection, execution_id: UUID) -> dict[str, Any] | None
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id
+            SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
+                   parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
             FROM executions
             WHERE id = %s
             """,
             (execution_id,),
-        )
-        return cur.fetchone()
-
-
-def get_workflow_version(conn: Connection, workflow_version_id: UUID) -> dict[str, Any] | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, workflow_id, version_number, graph_json FROM workflow_versions WHERE id = %s",
-            (workflow_version_id,),
         )
         return cur.fetchone()
 

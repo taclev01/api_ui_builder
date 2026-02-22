@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ExecutionStatus = Literal["queued", "running", "paused", "completed", "failed", "aborted"]
@@ -23,9 +23,22 @@ class WorkflowVersionCreate(BaseModel):
 
 
 class ExecutionCreate(BaseModel):
-    workflow_version_id: UUID
+    workflow_version_id: UUID | None = None
+    workflow_id: UUID | None = None
+    published_only: bool = True
     input_json: dict[str, Any] = Field(default_factory=dict)
     debug_mode: bool = False
+    trigger_type: str | None = None
+    trigger_payload: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = None
+    correlation_id: str | None = None
+    parent_execution_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_reference_mode(self) -> "ExecutionCreate":
+        if (self.workflow_version_id is None) == (self.workflow_id is None):
+            raise ValueError("Provide exactly one of workflow_version_id or workflow_id")
+        return self
 
 
 class DebugCommand(BaseModel):
@@ -48,6 +61,11 @@ class ExecutionOut(BaseModel):
     finished_at: datetime | None
     debug_mode: bool
     current_node_id: str | None
+    parent_execution_id: UUID | None
+    trigger_type: str | None
+    trigger_payload: dict[str, Any]
+    idempotency_key: str | None
+    correlation_id: str | None
 
 
 class EventOut(BaseModel):

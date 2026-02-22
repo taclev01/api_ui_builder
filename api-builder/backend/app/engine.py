@@ -6,8 +6,8 @@ from uuid import UUID
 
 from psycopg import Connection
 
-from .config import settings
 from . import repository as repo
+from .config import settings
 
 
 @dataclass
@@ -33,7 +33,6 @@ def _index_graph(graph: dict[str, Any]) -> tuple[dict[str, Any], dict[str, list[
 
 
 def _resolve_next_edge(node_id: str, outgoing: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
-    # v1 simple behavior: first outgoing edge wins unless later typed rules are introduced
     edges = outgoing.get(node_id, [])
     return edges[0] if edges else None
 
@@ -55,7 +54,41 @@ def _write_snapshot_if_needed(conn: Connection, execution_id: UUID, context: Exe
         )
 
 
-def run_execution(conn: Connection, execution_id: UUID, workflow_version: dict[str, Any], input_json: dict[str, Any]) -> None:
+def _resolve_workflow_version_for_invocation(
+    conn: Connection,
+    node_config: dict[str, Any],
+) -> dict[str, Any]:
+    target_workflow_version_id = node_config.get("targetWorkflowVersionId")
+    target_workflow_id = node_config.get("targetWorkflowId")
+
+    if isinstance(target_workflow_version_id, str) and target_workflow_version_id:
+        version = repo.get_workflow_version(conn, UUID(target_workflow_version_id))
+        if not version:
+            raise RuntimeError("invoke_workflow target workflow version not found")
+        return version
+
+    if isinstance(target_workflow_id, str) and target_workflow_id:
+        version = repo.get_latest_published_workflow_version(conn, UUID(target_workflow_id))
+        if not version:
+            raise RuntimeError("invoke_workflow target published workflow version not found")
+        return version
+
+    raise RuntimeError("invoke_workflow requires targetWorkflowVersionId or targetWorkflowId")
+
+
+def run_execution(
+    conn: Connection,
+    execution_id: UUID,
+    workflow_version: dict[str, Any],
+    input_json: dict[str, Any],
+    *,
+    call_depth: int = 0,
+    parent_execution_id: UUID | None = None,
+    correlation_id: str | None = None,
+) -> None:
+    if call_depth > settings.max_call_depth:
+        raise RuntimeError(f"Maximum workflow call depth exceeded: {settings.max_call_depth}")
+
     graph = workflow_version["graph_json"]
     nodes, outgoing = _index_graph(graph)
     current_node_id = graph.get("entry_node_id")
@@ -73,14 +106,24 @@ def run_execution(conn: Connection, execution_id: UUID, workflow_version: dict[s
     context = ExecutionContext(
         vars={"input": input_json},
         nodes={},
-        system={"execution_id": str(execution_id)},
+        system={
+            "execution_id": str(execution_id),
+            "call_depth": call_depth,
+            "parent_execution_id": str(parent_execution_id) if parent_execution_id else None,
+            "correlation_id": correlation_id,
+        },
     )
 
     repo.append_event(
         conn,
         execution_id=execution_id,
         event_type="RUN_STARTED",
-        payload={"workflow_version_id": str(workflow_version["id"])},
+        payload={
+            "workflow_version_id": str(workflow_version["id"]),
+            "call_depth": call_depth,
+            "parent_execution_id": str(parent_execution_id) if parent_execution_id else None,
+            "correlation_id": correlation_id,
+        },
     )
 
     while True:
@@ -102,7 +145,6 @@ def run_execution(conn: Connection, execution_id: UUID, workflow_version: dict[s
             payload={"node_type": node_type},
         )
 
-        # Minimal v1 draft execution behavior. Detailed semantics per node type can be expanded.
         if node_type == "end":
             context.nodes[current_node_id] = {"status": "success", "output": {"ended": True}}
             repo.append_event(
@@ -126,8 +168,8 @@ def run_execution(conn: Connection, execution_id: UUID, workflow_version: dict[s
             var_name = node_config.get("name")
             value = node_config.get("value")
             if var_name:
-                context.vars[var_name] = value
-            context.nodes[current_node_id] = {"status": "success", "output": {var_name: value}}
+                context.vars[str(var_name)] = value
+            context.nodes[current_node_id] = {"status": "success", "output": {str(var_name): value}}
         elif node_type in {"form_request", "python_request"}:
             context.nodes[current_node_id] = {
                 "status": "success",
@@ -135,6 +177,73 @@ def run_execution(conn: Connection, execution_id: UUID, workflow_version: dict[s
                     "simulated": True,
                     "request": node_config,
                     "result": {"status_code": 200, "body": {}},
+                },
+            }
+        elif node_type == "invoke_workflow":
+            child_version = _resolve_workflow_version_for_invocation(conn, node_config)
+            child_input = node_config.get("input", {})
+            if not isinstance(child_input, dict):
+                raise RuntimeError("invoke_workflow input must be a JSON object")
+
+            child_correlation_id = correlation_id or str(execution_id)
+
+            repo.append_event(
+                conn,
+                execution_id=execution_id,
+                event_type="INVOKE_WORKFLOW_STARTED",
+                node_id=current_node_id,
+                payload={
+                    "target_workflow_version_id": str(child_version["id"]),
+                    "target_workflow_id": str(child_version["workflow_id"]),
+                },
+            )
+
+            child_execution = repo.create_execution(
+                conn,
+                workflow_version_id=child_version["id"],
+                input_json=child_input,
+                debug_mode=False,
+                parent_execution_id=execution_id,
+                trigger_type="workflow",
+                trigger_payload={
+                    "invoked_by_execution_id": str(execution_id),
+                    "invoked_by_node_id": current_node_id,
+                    "call_depth": call_depth + 1,
+                },
+                idempotency_key=None,
+                correlation_id=child_correlation_id,
+            )
+
+            run_execution(
+                conn,
+                execution_id=child_execution["id"],
+                workflow_version=child_version,
+                input_json=child_input,
+                call_depth=call_depth + 1,
+                parent_execution_id=execution_id,
+                correlation_id=child_correlation_id,
+            )
+
+            child_status = repo.get_execution(conn, child_execution["id"])
+            if not child_status or child_status["status"] != "completed":
+                raise RuntimeError("invoke_workflow child execution did not complete successfully")
+
+            repo.append_event(
+                conn,
+                execution_id=execution_id,
+                event_type="INVOKE_WORKFLOW_SUCCEEDED",
+                node_id=current_node_id,
+                payload={
+                    "child_execution_id": str(child_execution["id"]),
+                    "child_workflow_version_id": str(child_version["id"]),
+                },
+            )
+
+            context.nodes[current_node_id] = {
+                "status": "success",
+                "output": {
+                    "child_execution_id": str(child_execution["id"]),
+                    "child_workflow_version_id": str(child_version["id"]),
                 },
             }
         elif node_type == "if":
@@ -147,7 +256,7 @@ def run_execution(conn: Connection, execution_id: UUID, workflow_version: dict[s
             context.nodes[current_node_id] = {"status": "success", "output": {"saved": True}}
         elif node_type in {"start", "auth", "delay", "raise_error"}:
             if node_type == "raise_error":
-                raise RuntimeError(node_config.get("message", "raise_error node triggered"))
+                raise RuntimeError(str(node_config.get("message", "raise_error node triggered")))
             context.nodes[current_node_id] = {"status": "success", "output": {}}
         else:
             raise RuntimeError(f"Unsupported node type: {node_type}")
@@ -224,10 +333,15 @@ def continue_execution_from_pause(
         payload={"mode": action},
     )
 
-    # v1 draft: resume restarts from current cursor semantics owned by executions.current_node_id
     execution = repo.get_execution(conn, execution_id)
     if not execution:
         raise RuntimeError("Execution not found")
 
-    input_json = {}
-    run_execution(conn, execution_id, workflow_version, input_json)
+    run_execution(
+        conn,
+        execution_id=execution_id,
+        workflow_version=workflow_version,
+        input_json={},
+        parent_execution_id=execution.get("parent_execution_id"),
+        correlation_id=execution.get("correlation_id"),
+    )

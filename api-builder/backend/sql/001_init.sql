@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS executions (
   current_node_id TEXT,
   input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   final_context_json JSONB,
+  parent_execution_id UUID REFERENCES executions(id) ON DELETE SET NULL,
+  trigger_type TEXT,
+  trigger_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  idempotency_key TEXT,
+  correlation_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -42,6 +47,13 @@ CREATE INDEX IF NOT EXISTS idx_executions_workflow_version_id
   ON executions(workflow_version_id);
 CREATE INDEX IF NOT EXISTS idx_executions_status
   ON executions(status);
+CREATE INDEX IF NOT EXISTS idx_executions_parent_execution_id
+  ON executions(parent_execution_id);
+CREATE INDEX IF NOT EXISTS idx_executions_correlation_id
+  ON executions(correlation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_idempotency_key_unique
+  ON executions(idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS execution_events (
   id BIGSERIAL PRIMARY KEY,

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
 
+from . import repository as repo
 from .db import get_conn
 from .engine import continue_execution_from_pause, run_execution
 from .models import (
@@ -16,7 +17,6 @@ from .models import (
     WorkflowOut,
     WorkflowVersionCreate,
 )
-from . import repository as repo
 
 app = FastAPI(title="API Logic Builder Backend", version="0.1.0")
 
@@ -64,22 +64,57 @@ def create_workflow_version(workflow_id: UUID, payload: WorkflowVersionCreate) -
         return version
 
 
+def _resolve_workflow_version_for_execution(conn: Any, payload: ExecutionCreate) -> dict[str, Any] | None:
+    if payload.workflow_version_id:
+        return repo.get_workflow_version(conn, payload.workflow_version_id)
+
+    if payload.workflow_id:
+        if payload.published_only:
+            return repo.get_latest_published_workflow_version(conn, payload.workflow_id)
+
+        # For v1, non-published mode still resolves to latest published for safety.
+        return repo.get_latest_published_workflow_version(conn, payload.workflow_id)
+
+    return None
+
+
 @app.post("/executions", response_model=ExecutionOut)
 def create_execution(payload: ExecutionCreate) -> Any:
     with get_conn() as conn:
-        workflow_version = repo.get_workflow_version(conn, payload.workflow_version_id)
+        workflow_version = _resolve_workflow_version_for_execution(conn, payload)
         if not workflow_version:
             raise HTTPException(status_code=404, detail="Workflow version not found")
 
+        if payload.idempotency_key:
+            existing = repo.get_execution_by_idempotency_key(conn, payload.idempotency_key)
+            if existing:
+                return existing
+
         execution = repo.create_execution(
             conn,
-            workflow_version_id=payload.workflow_version_id,
+            workflow_version_id=workflow_version["id"],
             input_json=payload.input_json,
             debug_mode=payload.debug_mode,
+            parent_execution_id=payload.parent_execution_id,
+            trigger_type=payload.trigger_type,
+            trigger_payload=payload.trigger_payload,
+            idempotency_key=payload.idempotency_key,
+            correlation_id=payload.correlation_id,
         )
 
+        call_depth_raw = payload.trigger_payload.get("call_depth", 0)
+        call_depth = call_depth_raw if isinstance(call_depth_raw, int) else 0
+
         try:
-            run_execution(conn, execution["id"], workflow_version, payload.input_json)
+            run_execution(
+                conn,
+                execution_id=execution["id"],
+                workflow_version=workflow_version,
+                input_json=payload.input_json,
+                call_depth=call_depth,
+                parent_execution_id=payload.parent_execution_id,
+                correlation_id=payload.correlation_id,
+            )
         except Exception as exc:
             repo.append_event(
                 conn,
