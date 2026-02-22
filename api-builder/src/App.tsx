@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import {
   Background,
   Controls,
@@ -8,11 +8,14 @@ import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
+  getConnectedEdges,
   type Connection,
   type EdgeChange,
+  type Node,
   type NodeChange,
 } from '@xyflow/react';
 import {
+  Alert,
   Button,
   Card,
   Collapse,
@@ -29,10 +32,12 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import { CopyOutlined, DeleteOutlined } from '@ant-design/icons';
 
 import { BreakpointEdge } from './components/BreakpointEdge';
 import { CodeEditor } from './components/CodeEditor';
 import { FlowNode } from './components/FlowNode';
+import { NODE_HELP, QUICK_REFERENCE } from './nodeHelp';
 import { NODE_TEMPLATES } from './nodeTemplates';
 import type { ApiEdge, ApiNode, NodeCategory, NodeTemplate } from './types';
 
@@ -40,6 +45,8 @@ import '@xyflow/react/dist/style.css';
 import './App.css';
 
 const { Header, Content, Sider } = Layout;
+const EXTERNAL_DOCS_URL = 'https://reactflow.dev/learn';
+const MIN_PROXIMITY_DISTANCE = 170;
 
 type NodeFormValues = {
   label?: string;
@@ -83,6 +90,7 @@ type NodeFormValues = {
   authType?: string;
   authTokenVar?: string;
   authHeaderName?: string;
+  authList?: AuthItem[];
   saveKey?: string;
   saveFrom?: string;
   delayMs?: number;
@@ -95,6 +103,13 @@ type ParameterItem = {
   type?: string;
   defaultValue?: string;
   description?: string;
+};
+
+type AuthItem = {
+  name?: string;
+  authType?: string;
+  tokenVar?: string;
+  headerName?: string;
 };
 
 const initialNodes: ApiNode[] = [
@@ -174,6 +189,52 @@ function createNodeFromTemplate(template: NodeTemplate, id: string, index: numbe
       config: structuredClone(template.defaultConfig),
     },
   };
+}
+
+function isDataOnlyNodeType(nodeType: ApiNode['data']['nodeType']): boolean {
+  return nodeType === 'auth' || nodeType === 'parameters';
+}
+
+function isStartNodeType(nodeType: ApiNode['data']['nodeType']): boolean {
+  return nodeType === 'start_python' || nodeType === 'start_request';
+}
+
+function isTerminalNodeType(nodeType: ApiNode['data']['nodeType']): boolean {
+  return nodeType === 'end' || nodeType === 'raise_error';
+}
+
+function canNodeBeSource(node: ApiNode): boolean {
+  return !isDataOnlyNodeType(node.data.nodeType) && !isTerminalNodeType(node.data.nodeType);
+}
+
+function canNodeBeTarget(node: ApiNode): boolean {
+  return !isDataOnlyNodeType(node.data.nodeType) && !isStartNodeType(node.data.nodeType);
+}
+
+function allowsMultipleIncoming(nodeType: ApiNode['data']['nodeType']): boolean {
+  return nodeType === 'join' || nodeType === 'end' || nodeType === 'raise_error';
+}
+
+function edgeStyleForCondition(condition?: 'true' | 'false') {
+  if (condition === 'true') {
+    return { stroke: '#2f9e44', strokeWidth: 2 };
+  }
+  if (condition === 'false') {
+    return { stroke: '#c92a2a', strokeWidth: 2 };
+  }
+  return { stroke: '#44556f', strokeWidth: 1.5 };
+}
+
+function isIfConditionHandle(handle?: string | null): handle is 'true' | 'false' {
+  return handle === 'true' || handle === 'false';
+}
+
+function nodeCenter(node: ApiNode): { x: number; y: number } {
+  const width = node.measured?.width ?? 170;
+  const height = node.measured?.height ?? 64;
+  const x = node.position.x + width / 2;
+  const y = node.position.y + height / 2;
+  return { x, y };
 }
 
 function toStringValue(value: unknown, fallback = ''): string {
@@ -283,11 +344,22 @@ function configToFormValues(node: ApiNode): NodeFormValues {
         invokeInputSource: toStringValue(config.inputSource, 'vars.input'),
       };
     case 'auth':
+      if (Array.isArray(config.authList)) {
+        return {
+          ...baseValues,
+          authList: config.authList as AuthItem[],
+        };
+      }
       return {
         ...baseValues,
-        authType: toStringValue(config.authType, 'bearer'),
-        authTokenVar: toStringValue(config.tokenVar, 'vars.token'),
-        authHeaderName: toStringValue(config.headerName, 'Authorization'),
+        authList: [
+          {
+            name: 'default',
+            authType: toStringValue(config.authType, 'bearer'),
+            tokenVar: toStringValue(config.tokenVar, 'vars.token'),
+            headerName: toStringValue(config.headerName, 'Authorization'),
+          },
+        ],
       };
     case 'save':
       return {
@@ -402,6 +474,20 @@ function buildConfigFromValues(
         inputSource: values.invokeInputSource ?? 'vars.input',
       };
     case 'auth':
+      if ((values.authList ?? []).length > 0) {
+        const first = values.authList?.[0];
+        return {
+          authList: (values.authList ?? []).map((item, index) => ({
+            name: item.name ?? `auth_${index + 1}`,
+            authType: item.authType ?? 'bearer',
+            tokenVar: item.tokenVar ?? 'vars.token',
+            headerName: item.headerName ?? 'Authorization',
+          })),
+          authType: first?.authType ?? 'bearer',
+          tokenVar: first?.tokenVar ?? 'vars.token',
+          headerName: first?.headerName ?? 'Authorization',
+        };
+      }
       return {
         authType: values.authType ?? 'bearer',
         tokenVar: values.authTokenVar ?? 'vars.token',
@@ -437,6 +523,8 @@ function buildConfigFromValues(
 function renderNodeConfigFields(
   node: ApiNode,
   authOptions: Array<{ label: string; value: string }>,
+  parameterEntries: ParameterItem[],
+  authEntries: AuthItem[],
 ): ReactNode {
   switch (node.data.nodeType) {
     case 'start_python':
@@ -687,23 +775,67 @@ function renderNodeConfigFields(
       );
     case 'auth':
       return (
-        <>
-          <Form.Item label="Auth Type" name="authType">
-            <Select
-              options={[
-                { label: 'Bearer Token', value: 'bearer' },
-                { label: 'API Key', value: 'api_key' },
-                { label: 'Basic', value: 'basic' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="Token Variable" name="authTokenVar">
-            <Input placeholder="vars.token" />
-          </Form.Item>
-          <Form.Item label="Header Name" name="authHeaderName">
-            <Input placeholder="Authorization" />
-          </Form.Item>
-        </>
+        <Form.List name="authList">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Collapse
+                className="parameter-collapse"
+                size="small"
+                items={fields.map((field, index) => {
+                  const current = authEntries[index];
+                  const displayName = current?.name?.trim() || `Auth ${index + 1}`;
+                  return {
+                    key: String(field.key),
+                    label: (
+                      <div className="collapse-item-label">
+                        <span>{displayName}</span>
+                        <Button
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            remove(field.name);
+                          }}
+                        />
+                      </div>
+                    ),
+                    children: (
+                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                        <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
+                          <Input placeholder="default_auth" />
+                        </Form.Item>
+                        <Form.Item label="Auth Type" name={[field.name, 'authType']}>
+                          <Select
+                            options={[
+                              { label: 'Bearer Token', value: 'bearer' },
+                              { label: 'API Key', value: 'api_key' },
+                              { label: 'Basic', value: 'basic' },
+                            ]}
+                          />
+                        </Form.Item>
+                        <Form.Item label="Token Variable" name={[field.name, 'tokenVar']}>
+                          <Input placeholder="vars.token" />
+                        </Form.Item>
+                        <Form.Item label="Header Name" name={[field.name, 'headerName']}>
+                          <Input placeholder="Authorization" />
+                        </Form.Item>
+                      </Space>
+                    ),
+                  };
+                })}
+              />
+              <Button
+                block
+                onClick={() =>
+                  add({ name: '', authType: 'bearer', tokenVar: 'vars.token', headerName: 'Authorization' })
+                }
+              >
+                Add Auth Entry
+              </Button>
+            </Space>
+          )}
+        </Form.List>
       );
     case 'save':
       return (
@@ -736,37 +868,51 @@ function renderNodeConfigFields(
               <Collapse
                 className="parameter-collapse"
                 size="small"
-                items={fields.map((field, index) => ({
-                  key: String(field.key),
-                  label: `Parameter ${index + 1}`,
-                  children: (
-                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
-                      <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
-                        <Input placeholder="date" />
-                      </Form.Item>
-                      <Form.Item label="Type" name={[field.name, 'type']}>
-                        <Select
-                          options={[
-                            { label: 'String', value: 'string' },
-                            { label: 'Number', value: 'number' },
-                            { label: 'Boolean', value: 'boolean' },
-                            { label: 'List', value: 'list' },
-                            { label: 'Object', value: 'object' },
-                          ]}
+                items={fields.map((field, index) => {
+                  const current = parameterEntries[index];
+                  const displayName = current?.name?.trim() || `Parameter ${index + 1}`;
+                  return {
+                    key: String(field.key),
+                    label: (
+                      <div className="collapse-item-label">
+                        <span>{displayName}</span>
+                        <Button
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            remove(field.name);
+                          }}
                         />
-                      </Form.Item>
-                      <Form.Item label="Default Value" name={[field.name, 'defaultValue']}>
-                        <Input />
-                      </Form.Item>
-                      <Form.Item label="Description" name={[field.name, 'description']}>
-                        <Input />
-                      </Form.Item>
-                      <Button danger block onClick={() => remove(field.name)}>
-                        Remove Parameter
-                      </Button>
-                    </Space>
-                  ),
-                }))}
+                      </div>
+                    ),
+                    children: (
+                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                        <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
+                          <Input placeholder="date" />
+                        </Form.Item>
+                        <Form.Item label="Type" name={[field.name, 'type']}>
+                          <Select
+                            options={[
+                              { label: 'String', value: 'string' },
+                              { label: 'Number', value: 'number' },
+                              { label: 'Boolean', value: 'boolean' },
+                              { label: 'List', value: 'list' },
+                              { label: 'Object', value: 'object' },
+                            ]}
+                          />
+                        </Form.Item>
+                        <Form.Item label="Default Value" name={[field.name, 'defaultValue']}>
+                          <Input />
+                        </Form.Item>
+                        <Form.Item label="Description" name={[field.name, 'description']}>
+                          <Input />
+                        </Form.Item>
+                      </Space>
+                    ),
+                  };
+                })}
               />
               <Button block onClick={() => add({ name: '', type: 'string', defaultValue: '', description: '' })}>
                 Add Parameter
@@ -880,11 +1026,18 @@ export default function App() {
   const [edges, setEdges] = useState<ApiEdge[]>(initialEdges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [proximityEnabled, setProximityEnabled] = useState(true);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [pythonCode, setPythonCode] = useState('');
 
   const [form] = Form.useForm<NodeFormValues>();
+  const parameterEntries = (Form.useWatch('parametersList', form) as ParameterItem[] | undefined) ?? [];
+  const authEntries = (Form.useWatch('authList', form) as AuthItem[] | undefined) ?? [];
   const nodeCounterRef = useRef(4);
+  const edgeCounterRef = useRef(1000);
+  const nodesRef = useRef<ApiNode[]>(initialNodes);
+  const edgesRef = useRef<ApiEdge[]>(initialEdges);
 
   const nodeTypes = useMemo(() => ({ apiNode: FlowNode }), []);
   const edgeTypes = useMemo(() => ({ breakpoint: BreakpointEdge }), []);
@@ -893,6 +1046,24 @@ export default function App() {
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId],
   );
+  const selectedNodeHelp = useMemo(
+    () => (selectedNode ? NODE_HELP[selectedNode.data.nodeType] : null),
+    [selectedNode],
+  );
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
+
+  useEffect(() => {
+    if (!proximityEnabled) {
+      setEdges((current) => current.filter((edge) => edge.className !== 'temp-proximity-edge'));
+    }
+  }, [proximityEnabled]);
 
   useEffect(() => {
     if (!selectedNode) {
@@ -960,50 +1131,456 @@ export default function App() {
     () =>
       nodes
         .filter((node) => node.data.nodeType === 'auth')
-        .map((node) => ({
-          value: node.id,
-          label: `${node.data.label} (${node.id})`,
-        })),
+        .flatMap((node) => {
+          const configuredList = Array.isArray(node.data.config.authList)
+            ? (node.data.config.authList as AuthItem[])
+            : [];
+
+          if (configuredList.length === 0) {
+            return [
+              {
+                value: `${node.id}::default`,
+                label: `${node.data.label} / default`,
+              },
+            ];
+          }
+
+          return configuredList.map((entry, index) => {
+            const entryName = entry.name?.trim() || `auth_${index + 1}`;
+            return {
+              value: `${node.id}::${entryName}`,
+              label: `${node.data.label} / ${entryName}`,
+            };
+          });
+        }),
     [nodes],
   );
 
-  const onNodesChange = useCallback((changes: NodeChange<ApiNode>[]) => {
-    setNodes((current) => applyNodeChanges(changes, current));
-  }, []);
+  const reconnectAroundDeletedNodes = useCallback(
+    (deletedNodeIds: string[], currentNodes: ApiNode[], currentEdges: ApiEdge[]): ApiEdge[] => {
+      if (deletedNodeIds.length === 0) {
+        return currentEdges;
+      }
+
+      const deletedSet = new Set(deletedNodeIds);
+      const deletedNodes = currentNodes.filter((node) => deletedSet.has(node.id));
+      const remainingNodes = currentNodes.filter((node) => !deletedSet.has(node.id));
+      let workingEdges = currentEdges.filter((edge) => !deletedSet.has(edge.source) && !deletedSet.has(edge.target));
+
+      for (const deletedNode of deletedNodes) {
+        const connected = getConnectedEdges([deletedNode], currentEdges);
+        const incomingEdges = connected.filter((edge) => edge.target === deletedNode.id);
+        const outgoingEdges = connected.filter((edge) => edge.source === deletedNode.id);
+
+        for (const inEdge of incomingEdges) {
+          for (const outEdge of outgoingEdges) {
+            if (inEdge.source === outEdge.target || deletedSet.has(outEdge.target) || deletedSet.has(inEdge.source)) {
+              continue;
+            }
+
+            const sourceNode = remainingNodes.find((node) => node.id === inEdge.source);
+            const targetNode = remainingNodes.find((node) => node.id === outEdge.target);
+            if (!sourceNode || !targetNode) {
+              continue;
+            }
+            if (!canNodeBeSource(sourceNode) || !canNodeBeTarget(targetNode)) {
+              continue;
+            }
+
+            const sourceHandle = inEdge.sourceHandle ?? undefined;
+            const condition =
+              sourceHandle === 'true' || sourceHandle === 'false' ? sourceHandle : inEdge.data?.condition;
+            if (sourceNode.data.nodeType === 'if' && !condition) {
+              continue;
+            }
+
+            const duplicateExists = workingEdges.some(
+              (edge) =>
+                edge.source === inEdge.source &&
+                edge.target === outEdge.target &&
+                (edge.sourceHandle ?? undefined) === sourceHandle,
+            );
+            if (duplicateExists) {
+              continue;
+            }
+
+            edgeCounterRef.current += 1;
+            workingEdges.push({
+              id: `e-${edgeCounterRef.current}`,
+              source: inEdge.source,
+              sourceHandle,
+              target: outEdge.target,
+              type: 'breakpoint',
+              data: { breakpoint: false, condition },
+              label: condition ? condition.toUpperCase() : undefined,
+              style: edgeStyleForCondition(
+                condition === 'true' || condition === 'false' ? condition : undefined,
+              ),
+            });
+          }
+        }
+      }
+
+      return workingEdges;
+    },
+    [],
+  );
+
+  const chooseIfSourceHandle = useCallback(
+    (sourceNode: ApiNode, targetNode: ApiNode): 'true' | 'false' | null => {
+      const realEdges = edges.filter((edge) => edge.className !== 'temp-proximity-edge');
+      const trueTaken = realEdges.some(
+        (edge) =>
+          edge.source === sourceNode.id &&
+          ((edge.sourceHandle ?? undefined) === 'true' || edge.data?.condition === 'true'),
+      );
+      const falseTaken = realEdges.some(
+        (edge) =>
+          edge.source === sourceNode.id &&
+          ((edge.sourceHandle ?? undefined) === 'false' || edge.data?.condition === 'false'),
+      );
+
+      const sourceWidth = sourceNode.measured?.width ?? 170;
+      const sourceHeight = sourceNode.measured?.height ?? 64;
+      const sourceX = sourceNode.position.x;
+      const sourceY = sourceNode.position.y;
+      const trueHandlePoint = {
+        x: sourceX + sourceWidth * 0.28,
+        y: sourceY + sourceHeight,
+      };
+      const falseHandlePoint = {
+        x: sourceX + sourceWidth * 0.72,
+        y: sourceY + sourceHeight,
+      };
+      const targetCenter = nodeCenter(targetNode);
+      const trueDistance = Math.hypot(targetCenter.x - trueHandlePoint.x, targetCenter.y - trueHandlePoint.y);
+      const falseDistance = Math.hypot(targetCenter.x - falseHandlePoint.x, targetCenter.y - falseHandlePoint.y);
+      const preferred: 'true' | 'false' = trueDistance <= falseDistance ? 'true' : 'false';
+      const alternate: 'true' | 'false' = preferred === 'true' ? 'false' : 'true';
+
+      if (preferred === 'true' && !trueTaken) {
+        return 'true';
+      }
+      if (preferred === 'false' && !falseTaken) {
+        return 'false';
+      }
+      if (alternate === 'true' && !trueTaken) {
+        return 'true';
+      }
+      if (alternate === 'false' && !falseTaken) {
+        return 'false';
+      }
+      return null;
+    },
+    [edges],
+  );
+
+  const canAcceptIncomingConnection = useCallback(
+    (
+      targetNode: ApiNode,
+      sourceId: string,
+      sourceHandle: 'true' | 'false' | undefined,
+      realEdges: ApiEdge[],
+    ): boolean => {
+      const incoming = realEdges.filter((edge) => edge.target === targetNode.id);
+      if (allowsMultipleIncoming(targetNode.data.nodeType)) {
+        return true;
+      }
+      if (incoming.length === 0) {
+        return true;
+      }
+      if (incoming.length === 1 && sourceHandle) {
+        const existing = incoming[0];
+        const existingCondition = isIfConditionHandle(existing.sourceHandle)
+          ? existing.sourceHandle
+          : isIfConditionHandle(existing.data?.condition)
+            ? existing.data?.condition
+            : undefined;
+        if (existing.source === sourceId && existingCondition && existingCondition !== sourceHandle) {
+          return true;
+        }
+      }
+      return false;
+    },
+    [],
+  );
+
+  const buildConfiguredEdge = useCallback(
+    (connection: Connection): ApiEdge | null => {
+      if (!connection.source || !connection.target) {
+        return null;
+      }
+
+      const sourceNode = nodes.find((node) => node.id === connection.source);
+      const targetNode = nodes.find((node) => node.id === connection.target);
+      if (!sourceNode || !targetNode) {
+        return null;
+      }
+
+      if (!canNodeBeSource(sourceNode) || !canNodeBeTarget(targetNode)) {
+        return null;
+      }
+
+      const realEdges = edges.filter((edge) => edge.className !== 'temp-proximity-edge');
+
+      const condition =
+        sourceNode.data.nodeType === 'if' &&
+        (connection.sourceHandle === 'true' || connection.sourceHandle === 'false')
+          ? connection.sourceHandle
+          : undefined;
+
+      if (sourceNode.data.nodeType === 'if' && !condition) {
+        return null;
+      }
+
+      if (!canAcceptIncomingConnection(targetNode, connection.source, condition, realEdges)) {
+        return null;
+      }
+
+      if (
+        condition &&
+        realEdges.some(
+          (edge) =>
+            edge.source === connection.source &&
+            ((edge.sourceHandle ?? undefined) === condition || edge.data?.condition === condition),
+        )
+      ) {
+        return null;
+      }
+
+      if (
+        realEdges.some(
+          (edge) =>
+            edge.source === connection.source &&
+            edge.target === connection.target &&
+            (edge.sourceHandle ?? undefined) === (connection.sourceHandle ?? undefined),
+        )
+      ) {
+        return null;
+      }
+
+      edgeCounterRef.current += 1;
+      return {
+        ...connection,
+        id: `e-${edgeCounterRef.current}`,
+        type: 'breakpoint',
+        data: { breakpoint: false, condition },
+        label: condition ? condition.toUpperCase() : undefined,
+        style: edgeStyleForCondition(condition),
+      };
+    },
+    [canAcceptIncomingConnection, edges, nodes],
+  );
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange<ApiNode>[]) => {
+      const removedIds = changes
+        .filter((change) => change.type === 'remove')
+        .map((change) => change.id);
+
+      if (removedIds.length > 0) {
+        const baseEdges = edgesRef.current.filter((edge) => edge.className !== 'temp-proximity-edge');
+        const nextEdges = reconnectAroundDeletedNodes(removedIds, nodesRef.current, baseEdges);
+        setEdges(nextEdges);
+      }
+
+      setNodes((current) => applyNodeChanges(changes, current));
+    },
+    [reconnectAroundDeletedNodes],
+  );
 
   const onEdgesChange = useCallback((changes: EdgeChange<ApiEdge>[]) => {
     setEdges((current) => applyEdgeChanges(changes, current));
   }, []);
 
   const onConnect = useCallback((connection: Connection) => {
-    const sourceNode = nodes.find((node) => node.id === connection.source);
-    const isIfConnection = sourceNode?.data.nodeType === 'if';
-    const condition =
-      isIfConnection && (connection.sourceHandle === 'true' || connection.sourceHandle === 'false')
-        ? connection.sourceHandle
-        : undefined;
+    const configured = buildConfiguredEdge(connection);
+    if (!configured) {
+      return;
+    }
+    setEdges((current) => addEdge(configured, current) as ApiEdge[]);
+  }, [buildConfiguredEdge]);
 
-    const edgeStyle =
-      condition === 'true'
-        ? { stroke: '#2f9e44', strokeWidth: 2 }
-        : condition === 'false'
-          ? { stroke: '#c92a2a', strokeWidth: 2 }
-          : { stroke: '#44556f', strokeWidth: 1.5 };
+  const getProximityConnection = useCallback(
+    (dragged: ApiNode): Connection | null => {
+      if (isDataOnlyNodeType(dragged.data.nodeType)) {
+        return null;
+      }
 
-    setEdges((current) =>
-      addEdge(
-        {
-          ...connection,
-          id: `e-${connection.source}-${connection.target}-${Date.now()}`,
-          type: 'breakpoint',
-          data: { breakpoint: false, condition },
-          label: condition ? condition.toUpperCase() : undefined,
-          style: edgeStyle,
-        },
-        current,
-      ) as ApiEdge[],
-    );
-  }, [nodes]);
+      const draggedCenter = nodeCenter(dragged);
+      let bestDistance = Number.POSITIVE_INFINITY;
+      let bestConnection: Connection | null = null;
+
+      for (const candidate of nodes) {
+        if (candidate.id === dragged.id || isDataOnlyNodeType(candidate.data.nodeType)) {
+          continue;
+        }
+
+        const candidateCenter = nodeCenter(candidate);
+        const distance = Math.hypot(draggedCenter.x - candidateCenter.x, draggedCenter.y - candidateCenter.y);
+        if (distance >= MIN_PROXIMITY_DISTANCE || distance >= bestDistance) {
+          continue;
+        }
+
+        const leftToRight: Connection =
+          candidateCenter.x <= draggedCenter.x
+            ? { source: candidate.id, target: dragged.id, sourceHandle: null, targetHandle: null }
+            : { source: dragged.id, target: candidate.id, sourceHandle: null, targetHandle: null };
+        const rightToLeft: Connection =
+          leftToRight.source === dragged.id
+            ? { source: candidate.id, target: dragged.id, sourceHandle: null, targetHandle: null }
+            : { source: dragged.id, target: candidate.id, sourceHandle: null, targetHandle: null };
+
+        const tryConnections: Connection[] = [];
+        if (candidate.data.nodeType === 'if' && dragged.data.nodeType !== 'if') {
+          tryConnections.push({
+            source: candidate.id,
+            target: dragged.id,
+            sourceHandle: null,
+            targetHandle: null,
+          });
+        }
+        if (dragged.data.nodeType === 'if' && candidate.data.nodeType !== 'if') {
+          tryConnections.push({
+            source: dragged.id,
+            target: candidate.id,
+            sourceHandle: null,
+            targetHandle: null,
+          });
+        }
+        tryConnections.push(leftToRight, rightToLeft);
+        for (const pair of tryConnections) {
+          const sourceNode = nodes.find((node) => node.id === pair.source);
+          const targetNode = nodes.find((node) => node.id === pair.target);
+          if (!sourceNode || !targetNode) {
+            continue;
+          }
+          if (!canNodeBeSource(sourceNode) || !canNodeBeTarget(targetNode)) {
+            continue;
+          }
+          let sourceHandle: 'true' | 'false' | undefined;
+          if (sourceNode.data.nodeType === 'if') {
+            const ifHandle = chooseIfSourceHandle(sourceNode, targetNode);
+            if (!ifHandle) {
+              continue;
+            }
+            sourceHandle = ifHandle;
+          }
+          if (
+            !canAcceptIncomingConnection(
+              targetNode,
+              pair.source,
+              sourceHandle,
+              edges.filter((edge) => edge.className !== 'temp-proximity-edge'),
+            )
+          ) {
+            continue;
+          }
+          const alreadyConnected = edges.some(
+            (edge) =>
+                edge.className !== 'temp-proximity-edge' &&
+                edge.source === pair.source &&
+                edge.target === pair.target &&
+                (edge.sourceHandle ?? undefined) === sourceHandle,
+          );
+          if (alreadyConnected) {
+            continue;
+          }
+          if (
+            sourceNode.data.nodeType === 'if' &&
+            edges.some(
+              (edge) =>
+                edge.className !== 'temp-proximity-edge' &&
+                edge.source === pair.source &&
+                ((edge.sourceHandle ?? undefined) === sourceHandle || edge.data?.condition === sourceHandle),
+            )
+          ) {
+            continue;
+          }
+          bestDistance = distance;
+          bestConnection = { ...pair, sourceHandle: sourceHandle ?? null };
+          break;
+        }
+      }
+
+      return bestConnection;
+    },
+    [canAcceptIncomingConnection, chooseIfSourceHandle, edges, nodes],
+  );
+
+  const onNodeDrag = useCallback(
+    (_: MouseEvent, node: Node) => {
+      if (!proximityEnabled) {
+        setEdges((current) => current.filter((edge) => edge.className !== 'temp-proximity-edge'));
+        return;
+      }
+      const dragged = node as ApiNode;
+      const connection = getProximityConnection(dragged);
+
+      setEdges((current) => {
+        const nonTemp = current.filter((edge) => edge.className !== 'temp-proximity-edge');
+        if (!connection?.source || !connection.target) {
+          return nonTemp;
+        }
+
+        return [
+          ...nonTemp,
+          {
+            id: `temp-${connection.source}-${connection.target}`,
+            source: connection.source,
+            sourceHandle: connection.sourceHandle ?? undefined,
+            target: connection.target,
+            targetHandle: connection.targetHandle ?? undefined,
+            type: 'default',
+            className: 'temp-proximity-edge',
+            data: {
+              breakpoint: false,
+              condition:
+                connection.sourceHandle === 'true' || connection.sourceHandle === 'false'
+                  ? connection.sourceHandle
+                  : undefined,
+            },
+            label:
+              connection.sourceHandle === 'true' || connection.sourceHandle === 'false'
+                ? connection.sourceHandle.toUpperCase()
+                : undefined,
+            style:
+              connection.sourceHandle === 'true'
+                ? { stroke: '#2f9e44', strokeDasharray: '6 4', strokeWidth: 1.4 }
+                : connection.sourceHandle === 'false'
+                  ? { stroke: '#c92a2a', strokeDasharray: '6 4', strokeWidth: 1.4 }
+                  : { stroke: '#88a2c9', strokeDasharray: '6 4', strokeWidth: 1.2 },
+          },
+        ];
+      });
+    },
+    [getProximityConnection, proximityEnabled],
+  );
+
+  const onNodeDragStop = useCallback(
+    (_: MouseEvent, node: Node) => {
+      if (!proximityEnabled) {
+        setEdges((current) => current.filter((edge) => edge.className !== 'temp-proximity-edge'));
+        return;
+      }
+      const dragged = node as ApiNode;
+      const connection = getProximityConnection(dragged);
+
+      setEdges((current) => {
+        const nonTemp = current.filter((edge) => edge.className !== 'temp-proximity-edge');
+        if (!connection) {
+          return nonTemp;
+        }
+        const configured = buildConfiguredEdge(connection);
+        if (!configured) {
+          return nonTemp;
+        }
+        return addEdge(configured, nonTemp) as ApiEdge[];
+      });
+    },
+    [buildConfiguredEdge, getProximityConnection, proximityEnabled],
+  );
+
 
   const addNode = useCallback((template: NodeTemplate) => {
     const nextId = `n-${nodeCounterRef.current}`;
@@ -1107,6 +1684,14 @@ export default function App() {
       <Header className="app-header">
         <div className="brand">API Flow Builder</div>
         <Space>
+          <Space size={6}>
+            <Typography.Text style={{ color: '#ffffff' }}>Proximity Connect</Typography.Text>
+            <Switch size="small" checked={proximityEnabled} onChange={setProximityEnabled} />
+          </Space>
+          <Button onClick={() => setHelpOpen(true)}>Quick Reference</Button>
+          <Button href={EXTERNAL_DOCS_URL} target="_blank" rel="noreferrer">
+            External Docs
+          </Button>
           <Button type="primary" onClick={() => setPaletteOpen(true)}>
             Open Command Palette
           </Button>
@@ -1163,6 +1748,8 @@ export default function App() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onNodeDrag={onNodeDrag}
+            onNodeDragStop={onNodeDragStop}
             onNodeClick={(_, node) => setSelectedNodeId(node.id)}
             onPaneClick={() => setSelectedNodeId(null)}
             fitView
@@ -1191,16 +1778,43 @@ export default function App() {
                     <div>
                       <Tag>{selectedNode.data.nodeType}</Tag>
                       <Typography.Text type="secondary">{selectedNode.id}</Typography.Text>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={() => navigator.clipboard.writeText(selectedNode.id)}
+                      >
+                        Copy ID
+                      </Button>
                     </div>
                   </div>
                 </Space>
+
+                {selectedNodeHelp ? (
+                  <Alert
+                    className="node-help-alert"
+                    type="info"
+                    showIcon
+                    message={selectedNodeHelp.title}
+                    description={
+                      <div>
+                        <div>{selectedNodeHelp.description}</div>
+                        <ul className="node-help-list">
+                          {selectedNodeHelp.references.map((line) => (
+                            <li key={line}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    }
+                  />
+                ) : null}
 
                 <Form layout="vertical" form={form} onValuesChange={onFormValuesChange}>
                   <Form.Item label="Label" name="label" rules={[{ required: true }]}>
                     <Input />
                   </Form.Item>
 
-                  {renderNodeConfigFields(selectedNode, authOptions)}
+                  {renderNodeConfigFields(selectedNode, authOptions, parameterEntries, authEntries)}
                 </Form>
 
                 {selectedNode.data.nodeType === 'python_request' || selectedNode.data.nodeType === 'start_python' ? (
@@ -1251,6 +1865,26 @@ export default function App() {
               ),
             }))}
         />
+      </Drawer>
+
+      <Drawer
+        title="Quick Reference"
+        width={460}
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+      >
+        <Typography.Paragraph>
+          Use this guide for common value access patterns and wiring behavior.
+        </Typography.Paragraph>
+        <ul className="reference-list">
+          {QUICK_REFERENCE.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+        <Divider />
+        <Button href={EXTERNAL_DOCS_URL} target="_blank" rel="noreferrer">
+          Open External Documentation
+        </Button>
       </Drawer>
     </Layout>
   );

@@ -30,7 +30,7 @@ export type FlowEdgeData = {
 };
 
 export type ApiNode = Node<FlowNodeData, 'apiNode'>;
-export type ApiEdge = Edge<FlowEdgeData, 'breakpoint'>;
+export type ApiEdge = Edge<FlowEdgeData, 'breakpoint' | 'default'>;
 
 export type NodeCategory =
   | 'Lifecycle'

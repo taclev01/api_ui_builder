@@ -100,7 +100,19 @@ export const NODE_TEMPLATES: NodeTemplate[] = [
     type: 'auth',
     label: 'Auth',
     category: 'Auth',
-    defaultConfig: { authType: 'bearer', tokenVar: 'vars.token', headerName: 'Authorization' },
+    defaultConfig: {
+      authList: [
+        {
+          name: 'default',
+          authType: 'bearer',
+          tokenVar: 'vars.token',
+          headerName: 'Authorization',
+        },
+      ],
+      authType: 'bearer',
+      tokenVar: 'vars.token',
+      headerName: 'Authorization',
+    },
   },
   {
     type: 'parameters',

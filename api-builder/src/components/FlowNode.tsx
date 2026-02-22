@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { Tag } from 'antd';
+import { Tooltip, Tag } from 'antd';
 
+import { NODE_HELP } from '../nodeHelp';
 import type { FlowNodeData } from '../types';
 
 const colorByType: Record<string, string> = {
@@ -30,12 +31,17 @@ export function FlowNode({ data, selected }: NodeProps) {
   const isIfNode = typedData.nodeType === 'if';
   const isStartNode = typedData.nodeType === 'start_python' || typedData.nodeType === 'start_request';
   const isTerminalNode = typedData.nodeType === 'end' || typedData.nodeType === 'raise_error';
+  const help = NODE_HELP[typedData.nodeType];
 
   return (
     <div className={`flow-node ${selected ? 'is-selected' : ''} ${isDataNode ? 'is-auth-node' : ''}`}>
       {!isDataNode && !isStartNode ? <Handle type="target" position={Position.Top} /> : null}
-      <div className="flow-node-title">{typedData.label}</div>
-      <Tag color={colorByType[typedData.nodeType] ?? 'default'}>{typedData.nodeType}</Tag>
+      <Tooltip title={help.description} placement="top">
+        <div className="flow-node-title">{typedData.label}</div>
+      </Tooltip>
+      <Tooltip title={help.references.join(' | ')} placement="bottom">
+        <Tag color={colorByType[typedData.nodeType] ?? 'default'}>{typedData.nodeType}</Tag>
+      </Tooltip>
       {isDataNode || isTerminalNode ? null : isIfNode ? (
         <>
           <div className="if-handle-label if-handle-label-true">TRUE</div>

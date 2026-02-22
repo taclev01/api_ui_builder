@@ -150,6 +150,41 @@
   width: 100%;
 }
 
+.collapse-item-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.node-help-alert {
+  margin-bottom: 12px;
+}
+
+.node-help-list,
+.reference-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.react-flow__edge.temp-proximity-edge path {
+  stroke: #88a2c9;
+  stroke-dasharray: 6 4;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge.selected path.react-flow__edge-path {
+  stroke: #0b74ff !important;
+  stroke-width: 3.2 !important;
+  filter: drop-shadow(0 0 3px rgba(11, 116, 255, 0.45));
+}
+
+.react-flow__edge.selected .edge-debug-dot {
+  box-shadow: 0 0 0 3px rgba(11, 116, 255, 0.35), 0 1px 6px rgba(0, 0, 0, 0.25);
+  transform: scale(1.08);
+}
+
 .code-editor {
   border: 1px solid var(--line);
   border-radius: 8px;
