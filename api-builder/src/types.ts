@@ -1,7 +1,8 @@
 import type { Edge, Node } from '@xyflow/react';
 
 export type ApiNodeType =
-  | 'start'
+  | 'start_python'
+  | 'start_request'
   | 'end'
   | 'if'
   | 'define_variable'
@@ -11,6 +12,7 @@ export type ApiNodeType =
   | 'python_request'
   | 'invoke_workflow'
   | 'auth'
+  | 'parameters'
   | 'save'
   | 'delay'
   | 'raise_error';
@@ -29,8 +31,17 @@ export type FlowEdgeData = {
 export type ApiNode = Node<FlowNodeData, 'apiNode'>;
 export type ApiEdge = Edge<FlowEdgeData, 'breakpoint'>;
 
+export type NodeCategory =
+  | 'Lifecycle'
+  | 'Auth'
+  | 'Control'
+  | 'Requests'
+  | 'Save'
+  | 'Utility';
+
 export type NodeTemplate = {
   type: ApiNodeType;
   label: string;
+  category: NodeCategory;
   defaultConfig: Record<string, unknown>;
 };

@@ -170,7 +170,7 @@ def run_execution(
             if var_name:
                 context.vars[str(var_name)] = value
             context.nodes[current_node_id] = {"status": "success", "output": {str(var_name): value}}
-        elif node_type in {"form_request", "python_request"}:
+        elif node_type in {"form_request", "python_request", "start_request", "start_python"}:
             context.nodes[current_node_id] = {
                 "status": "success",
                 "output": {
@@ -254,7 +254,7 @@ def run_execution(
             context.nodes[current_node_id] = {"status": "success", "output": {"merged": True}}
         elif node_type == "save":
             context.nodes[current_node_id] = {"status": "success", "output": {"saved": True}}
-        elif node_type in {"start", "auth", "delay", "raise_error"}:
+        elif node_type in {"start", "auth", "parameters", "delay", "raise_error"}:
             if node_type == "raise_error":
                 raise RuntimeError(str(node_config.get("message", "raise_error node triggered")))
             context.nodes[current_node_id] = {"status": "success", "output": {}}

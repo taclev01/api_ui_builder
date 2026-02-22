@@ -1,23 +1,47 @@
 import type { NodeTemplate } from './types';
 
 export const NODE_TEMPLATES: NodeTemplate[] = [
-  { type: 'start', label: 'Start', defaultConfig: {} },
-  { type: 'end', label: 'End', defaultConfig: {} },
-  { type: 'if', label: 'If', defaultConfig: { expression: 'vars.status == "ok"' } },
+  {
+    type: 'start_python',
+    label: 'Start (Python)',
+    category: 'Lifecycle',
+    defaultConfig: {
+      functionName: 'setup_context',
+      code: 'def setup_context(context):\n    return context\n',
+    },
+  },
+  {
+    type: 'start_request',
+    label: 'Start (Request)',
+    category: 'Lifecycle',
+    defaultConfig: {
+      method: 'GET',
+      url: 'https://api.example.com/bootstrap',
+      authRef: '',
+      timeoutMs: 10000,
+      retryAttempts: 3,
+      backoff: 'exponential',
+    },
+  },
+  { type: 'end', label: 'End', category: 'Lifecycle', defaultConfig: {} },
+  { type: 'if', label: 'If', category: 'Control', defaultConfig: { expression: 'vars.status == "ok"' } },
   {
     type: 'define_variable',
     label: 'Define Variable',
+    category: 'Control',
     defaultConfig: { name: 'new_var', selector: 'body.data.id', source: 'last_response', defaultValue: '' },
   },
   {
     type: 'for_each_parallel',
     label: 'For Each (Parallel)',
+    category: 'Control',
     defaultConfig: { listExpr: 'vars.items', itemName: 'item', maxConcurrency: 5 },
   },
-  { type: 'join', label: 'Join', defaultConfig: { mergeStrategy: 'collect_list' } },
+  { type: 'join', label: 'Join', category: 'Control', defaultConfig: { mergeStrategy: 'collect_list' } },
   {
     type: 'form_request',
     label: 'Form Request',
+    category: 'Requests',
     defaultConfig: {
       method: 'GET',
       url: 'https://api.example.com/resource',
@@ -32,6 +56,7 @@ export const NODE_TEMPLATES: NodeTemplate[] = [
   {
     type: 'python_request',
     label: 'Python Request',
+    category: 'Requests',
     defaultConfig: {
       functionName: 'custom_request',
       timeoutMs: 10000,
@@ -43,6 +68,7 @@ export const NODE_TEMPLATES: NodeTemplate[] = [
   {
     type: 'invoke_workflow',
     label: 'Invoke Workflow',
+    category: 'Control',
     defaultConfig: {
       targetWorkflowId: '',
       targetWorkflowVersionId: '',
@@ -54,9 +80,20 @@ export const NODE_TEMPLATES: NodeTemplate[] = [
   {
     type: 'auth',
     label: 'Auth',
+    category: 'Auth',
     defaultConfig: { authType: 'bearer', tokenVar: 'vars.token', headerName: 'Authorization' },
   },
-  { type: 'save', label: 'Save', defaultConfig: { key: 'result', from: 'nodes.form_request.output' } },
-  { type: 'delay', label: 'Delay', defaultConfig: { ms: 250 } },
-  { type: 'raise_error', label: 'Raise Error', defaultConfig: { message: 'Failed validation.' } },
+  {
+    type: 'parameters',
+    label: 'Parameters',
+    category: 'Utility',
+    defaultConfig: {
+      parameters: [
+        { name: 'date', type: 'string', defaultValue: '', description: 'Date parameter' },
+      ],
+    },
+  },
+  { type: 'save', label: 'Save', category: 'Save', defaultConfig: { key: 'result', from: 'nodes.form_request.output' } },
+  { type: 'delay', label: 'Delay', category: 'Utility', defaultConfig: { ms: 250 } },
+  { type: 'raise_error', label: 'Raise Error', category: 'Utility', defaultConfig: { message: 'Failed validation.' } },
 ];

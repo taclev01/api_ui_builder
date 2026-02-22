@@ -15,13 +15,14 @@ import {
 import {
   Button,
   Card,
+  Collapse,
   Divider,
   Drawer,
   Form,
   Input,
   InputNumber,
   Layout,
-  List,
+  Modal,
   Select,
   Space,
   Switch,
@@ -33,7 +34,7 @@ import { BreakpointEdge } from './components/BreakpointEdge';
 import { CodeEditor } from './components/CodeEditor';
 import { FlowNode } from './components/FlowNode';
 import { NODE_TEMPLATES } from './nodeTemplates';
-import type { ApiEdge, ApiNode, NodeTemplate } from './types';
+import type { ApiEdge, ApiNode, NodeCategory, NodeTemplate } from './types';
 
 import '@xyflow/react/dist/style.css';
 import './App.css';
@@ -42,6 +43,13 @@ const { Header, Content, Sider } = Layout;
 
 type NodeFormValues = {
   label?: string;
+  startPythonFunctionName?: string;
+  startRequestMethod?: string;
+  startRequestUrl?: string;
+  startRequestAuthRef?: string;
+  startRequestTimeoutMs?: number;
+  startRequestRetryAttempts?: number;
+  startRequestBackoff?: string;
   ifExpression?: string;
   defineName?: string;
   defineSource?: string;
@@ -73,6 +81,14 @@ type NodeFormValues = {
   saveFrom?: string;
   delayMs?: number;
   raiseErrorMessage?: string;
+  parametersList?: ParameterItem[];
+};
+
+type ParameterItem = {
+  name?: string;
+  type?: string;
+  defaultValue?: string;
+  description?: string;
 };
 
 const initialNodes: ApiNode[] = [
@@ -80,7 +96,18 @@ const initialNodes: ApiNode[] = [
     id: 'n-1',
     type: 'apiNode',
     position: { x: 140, y: 120 },
-    data: { label: 'Start', nodeType: 'start', config: {} },
+    data: {
+      label: 'Start (Request)',
+      nodeType: 'start_request',
+      config: {
+        method: 'GET',
+        url: 'https://api.example.com/bootstrap',
+        authRef: '',
+        timeoutMs: 10000,
+        retryAttempts: 3,
+        backoff: 'exponential',
+      },
+    },
   },
   {
     id: 'n-2',
@@ -163,6 +190,21 @@ function configToFormValues(node: ApiNode): NodeFormValues {
   };
 
   switch (node.data.nodeType) {
+    case 'start_python':
+      return {
+        ...baseValues,
+        startPythonFunctionName: toStringValue(config.functionName, 'setup_context'),
+      };
+    case 'start_request':
+      return {
+        ...baseValues,
+        startRequestMethod: toStringValue(config.method, 'GET'),
+        startRequestUrl: toStringValue(config.url, 'https://api.example.com/bootstrap'),
+        startRequestAuthRef: toStringValue(config.authRef),
+        startRequestTimeoutMs: toNumberValue(config.timeoutMs, 10000),
+        startRequestRetryAttempts: toNumberValue(config.retryAttempts, 3),
+        startRequestBackoff: toStringValue(config.backoff, 'exponential'),
+      };
     case 'if':
       return {
         ...baseValues,
@@ -241,6 +283,13 @@ function configToFormValues(node: ApiNode): NodeFormValues {
         ...baseValues,
         raiseErrorMessage: toStringValue(config.message, 'Failed validation.'),
       };
+    case 'parameters':
+      return {
+        ...baseValues,
+        parametersList: Array.isArray(config.parameters)
+          ? (config.parameters as ParameterItem[])
+          : [{ name: 'date', type: 'string', defaultValue: '', description: 'Date parameter' }],
+      };
     default:
       return baseValues;
   }
@@ -252,6 +301,20 @@ function buildConfigFromValues(
   pythonCode: string,
 ): Record<string, unknown> {
   switch (node.data.nodeType) {
+    case 'start_python':
+      return {
+        functionName: values.startPythonFunctionName ?? 'setup_context',
+        code: pythonCode,
+      };
+    case 'start_request':
+      return {
+        method: values.startRequestMethod ?? 'GET',
+        url: values.startRequestUrl ?? '',
+        authRef: values.startRequestAuthRef ?? '',
+        timeoutMs: values.startRequestTimeoutMs ?? 10000,
+        retryAttempts: values.startRequestRetryAttempts ?? 3,
+        backoff: values.startRequestBackoff ?? 'exponential',
+      };
     case 'if':
       return {
         expression: values.ifExpression ?? 'vars.status == "ok"',
@@ -320,6 +383,15 @@ function buildConfigFromValues(
       return {
         message: values.raiseErrorMessage ?? 'Failed validation.',
       };
+    case 'parameters':
+      return {
+        parameters: (values.parametersList ?? []).map((item) => ({
+          name: item.name ?? '',
+          type: item.type ?? 'string',
+          defaultValue: item.defaultValue ?? '',
+          description: item.description ?? '',
+        })),
+      };
     default:
       return node.data.config;
   }
@@ -330,6 +402,50 @@ function renderNodeConfigFields(
   authOptions: Array<{ label: string; value: string }>,
 ): ReactNode {
   switch (node.data.nodeType) {
+    case 'start_python':
+      return (
+        <Form.Item
+          label="Setup Function Name"
+          name="startPythonFunctionName"
+          tooltip="Runs first and can prepare context/loop values."
+          rules={[{ required: true }]}
+        >
+          <Input placeholder="setup_context" />
+        </Form.Item>
+      );
+    case 'start_request':
+      return (
+        <>
+          <Form.Item label="Method" name="startRequestMethod">
+            <Select
+              options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((method) => ({
+                label: method,
+                value: method,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="URL" name="startRequestUrl" rules={[{ required: true }]}>
+            <Input placeholder="https://api.example.com/bootstrap" />
+          </Form.Item>
+          <Form.Item label="Auth Reference" name="startRequestAuthRef">
+            <Select allowClear options={authOptions} placeholder="Select auth node" />
+          </Form.Item>
+          <Form.Item label="Timeout (ms)" name="startRequestTimeoutMs">
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Retry Attempts" name="startRequestRetryAttempts">
+            <InputNumber min={0} max={10} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Retry Backoff" name="startRequestBackoff">
+            <Select
+              options={[
+                { label: 'Exponential', value: 'exponential' },
+                { label: 'Fixed', value: 'fixed' },
+              ]}
+            />
+          </Form.Item>
+        </>
+      );
     case 'if':
       return (
         <Form.Item label="Expression" name="ifExpression" tooltip="Boolean expression over vars/context.">
@@ -517,9 +633,143 @@ function renderNodeConfigFields(
           <Input placeholder="Failed validation." />
         </Form.Item>
       );
+    case 'parameters':
+      return (
+        <Form.List name="parametersList">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              {fields.map((field) => (
+                <Card key={field.key} size="small" className="parameter-item-card">
+                  <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
+                    <Input placeholder="date" />
+                  </Form.Item>
+                  <Form.Item label="Type" name={[field.name, 'type']}>
+                    <Select
+                      options={[
+                        { label: 'String', value: 'string' },
+                        { label: 'Number', value: 'number' },
+                        { label: 'Boolean', value: 'boolean' },
+                        { label: 'List', value: 'list' },
+                        { label: 'Object', value: 'object' },
+                      ]}
+                    />
+                  </Form.Item>
+                  <Form.Item label="Default Value" name={[field.name, 'defaultValue']}>
+                    <Input />
+                  </Form.Item>
+                  <Form.Item label="Description" name={[field.name, 'description']}>
+                    <Input />
+                  </Form.Item>
+                  <Button danger block onClick={() => remove(field.name)}>
+                    Remove Parameter
+                  </Button>
+                </Card>
+              ))}
+              <Button block onClick={() => add({ name: '', type: 'string', defaultValue: '', description: '' })}>
+                Add Parameter
+              </Button>
+            </Space>
+          )}
+        </Form.List>
+      );
     default:
       return <Typography.Text type="secondary">This node has no configurable fields.</Typography.Text>;
   }
+}
+
+function validateGraph(nodes: ApiNode[], edges: ApiEdge[]): string[] {
+  const errors: string[] = [];
+  const startTypes = new Set(['start_python', 'start_request']);
+  const terminalTypes = new Set(['end', 'raise_error']);
+  const dataOnlyTypes = new Set(['auth', 'parameters']);
+
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const outgoing = new Map<string, ApiEdge[]>();
+  const incoming = new Map<string, ApiEdge[]>();
+
+  for (const edge of edges) {
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge]);
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge]);
+  }
+
+  const startNodes = nodes.filter((node) => startTypes.has(node.data.nodeType));
+  if (startNodes.length !== 1) {
+    errors.push(`Graph must contain exactly 1 start node. Found ${startNodes.length}.`);
+  }
+
+  for (const node of nodes) {
+    const nodeType = node.data.nodeType;
+    const out = outgoing.get(node.id) ?? [];
+    const inc = incoming.get(node.id) ?? [];
+
+    if (startTypes.has(nodeType) && inc.length > 0) {
+      errors.push(`Start node "${node.data.label}" cannot have incoming edges.`);
+    }
+
+    if (terminalTypes.has(nodeType) && out.length > 0) {
+      errors.push(`Terminal node "${node.data.label}" cannot have outgoing edges.`);
+    }
+
+    if (dataOnlyTypes.has(nodeType) && (inc.length > 0 || out.length > 0)) {
+      errors.push(`Data-only node "${node.data.label}" must not have graph edges.`);
+    }
+
+    if (nodeType === 'if') {
+      const trueEdges = out.filter((edge) => edge.data?.condition === 'true').length;
+      const falseEdges = out.filter((edge) => edge.data?.condition === 'false').length;
+      if (trueEdges !== 1 || falseEdges !== 1) {
+        errors.push(`If node "${node.data.label}" must have exactly one TRUE edge and one FALSE edge.`);
+      }
+    }
+  }
+
+  const startNode = startNodes[0];
+  if (!startNode) {
+    return errors;
+  }
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const reachable = new Set<string>();
+
+  const dfs = (nodeId: string): void => {
+    if (visiting.has(nodeId)) {
+      errors.push(`Cycle detected at node "${nodesById.get(nodeId)?.data.label ?? nodeId}".`);
+      return;
+    }
+    if (visited.has(nodeId)) {
+      return;
+    }
+
+    visiting.add(nodeId);
+    reachable.add(nodeId);
+
+    const node = nodesById.get(nodeId);
+    const nodeType = node?.data.nodeType;
+    const nextEdges = outgoing.get(nodeId) ?? [];
+
+    if (node && !terminalTypes.has(nodeType ?? '') && !dataOnlyTypes.has(nodeType ?? '') && nextEdges.length === 0) {
+      errors.push(`Node "${node.data.label}" is a dead-end and never reaches a terminal node.`);
+    }
+
+    for (const edge of nextEdges) {
+      dfs(edge.target);
+    }
+
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  };
+
+  dfs(startNode.id);
+
+  const reachableTerminals = [...reachable].filter((nodeId) =>
+    terminalTypes.has(nodesById.get(nodeId)?.data.nodeType ?? ''),
+  );
+  if (reachableTerminals.length === 0) {
+    errors.push('No reachable terminal node found (End or Raise Error).');
+  }
+
+  return Array.from(new Set(errors));
 }
 
 export default function App() {
@@ -551,7 +801,7 @@ export default function App() {
     const formValues = configToFormValues(selectedNode);
     form.setFieldsValue(formValues);
 
-    if (selectedNode.data.nodeType === 'python_request') {
+    if (selectedNode.data.nodeType === 'python_request' || selectedNode.data.nodeType === 'start_python') {
       setPythonCode(toStringValue(selectedNode.data.config.code));
     } else {
       setPythonCode('');
@@ -568,6 +818,40 @@ export default function App() {
         template.label.toLowerCase().includes(q) || template.type.toLowerCase().includes(q),
     );
   }, [paletteQuery]);
+
+  const groupedTemplates = useMemo(() => {
+    return filteredTemplates.reduce<Record<NodeCategory, NodeTemplate[]>>(
+      (acc, template) => {
+        acc[template.category].push(template);
+        return acc;
+      },
+      {
+        Lifecycle: [],
+        Auth: [],
+        Control: [],
+        Requests: [],
+        Save: [],
+        Utility: [],
+      },
+    );
+  }, [filteredTemplates]);
+
+  const allGroupedTemplates = useMemo(() => {
+    return NODE_TEMPLATES.reduce<Record<NodeCategory, NodeTemplate[]>>(
+      (acc, template) => {
+        acc[template.category].push(template);
+        return acc;
+      },
+      {
+        Lifecycle: [],
+        Auth: [],
+        Control: [],
+        Requests: [],
+        Save: [],
+        Utility: [],
+      },
+    );
+  }, []);
 
   const authOptions = useMemo(
     () =>
@@ -669,7 +953,10 @@ export default function App() {
 
       setNodes((current) =>
         current.map((node) => {
-          if (node.id !== selectedNodeId || node.data.nodeType !== 'python_request') {
+          if (
+            node.id !== selectedNodeId ||
+            (node.data.nodeType !== 'python_request' && node.data.nodeType !== 'start_python')
+          ) {
             return node;
           }
 
@@ -688,6 +975,29 @@ export default function App() {
     },
     [selectedNodeId],
   );
+
+  const onValidateGraph = useCallback(() => {
+    const errors = validateGraph(nodes, edges);
+    if (errors.length === 0) {
+      Modal.success({
+        title: 'Graph Validation Passed',
+        content: 'No blocking issues were found.',
+      });
+      return;
+    }
+
+    Modal.error({
+      title: `Graph Validation Failed (${errors.length})`,
+      width: 680,
+      content: (
+        <ul>
+          {errors.map((error) => (
+            <li key={error}>{error}</li>
+          ))}
+        </ul>
+      ),
+    });
+  }, [edges, nodes]);
 
   return (
     <Layout className="app-layout">
@@ -708,22 +1018,35 @@ export default function App() {
               <Button type="primary" block onClick={() => setPaletteOpen(true)}>
                 Add Node
               </Button>
-              <Button block>Validate Graph</Button>
+              <Button block onClick={onValidateGraph}>
+                Validate Graph
+              </Button>
               <Button block>Save Version</Button>
             </Space>
           </Card>
           <Divider />
           <Card title="Node Catalog" size="small">
-            <List
+            <Collapse
               size="small"
-              dataSource={NODE_TEMPLATES}
-              renderItem={(template) => (
-                <List.Item>
-                  <Button type="link" onClick={() => addNode(template)}>
-                    {template.label}
-                  </Button>
-                </List.Item>
-              )}
+              ghost
+              items={(Object.keys(allGroupedTemplates) as NodeCategory[]).map((category) => ({
+                key: category,
+                label: category,
+                children: (
+                  <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                    {allGroupedTemplates[category].map((template) => (
+                      <Button
+                        key={template.type}
+                        type="text"
+                        className="catalog-item-btn"
+                        onClick={() => addNode(template)}
+                      >
+                        {template.label}
+                      </Button>
+                    ))}
+                  </Space>
+                ),
+              }))}
             />
           </Card>
         </Sider>
@@ -777,7 +1100,7 @@ export default function App() {
                   {renderNodeConfigFields(selectedNode, authOptions)}
                 </Form>
 
-                {selectedNode.data.nodeType === 'python_request' ? (
+                {selectedNode.data.nodeType === 'python_request' || selectedNode.data.nodeType === 'start_python' ? (
                   <div>
                     <Typography.Text strong>Python Code</Typography.Text>
                     <CodeEditor value={pythonCode} onChange={onPythonCodeChange} />
@@ -793,7 +1116,9 @@ export default function App() {
         title="Command Palette"
         width={420}
         open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
+        onClose={() => {
+          setPaletteOpen(false);
+        }}
       >
         <Input.Search
           placeholder="Search nodes"
@@ -801,25 +1126,27 @@ export default function App() {
           onChange={(event) => setPaletteQuery(event.target.value)}
           allowClear
         />
-        <List
-          className="palette-list"
-          dataSource={filteredTemplates}
-          renderItem={(template) => (
-            <List.Item
-              actions={[
-                <Button
-                  key={template.type}
-                  type="primary"
-                  size="small"
-                  onClick={() => addNode(template)}
-                >
-                  Add
-                </Button>,
-              ]}
-            >
-              <List.Item.Meta title={template.label} description={template.type} />
-            </List.Item>
-          )}
+        <Collapse
+          className="palette-collapse"
+          items={(Object.keys(groupedTemplates) as NodeCategory[])
+            .filter((category) => groupedTemplates[category].length > 0)
+            .map((category) => ({
+              key: category,
+              label: category,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                  {groupedTemplates[category].map((template) => (
+                    <Button
+                      key={template.type}
+                      className="palette-item-btn"
+                      onClick={() => addNode(template)}
+                    >
+                      {template.label}
+                    </Button>
+                  ))}
+                </Space>
+              ),
+            }))}
         />
       </Drawer>
     </Layout>
