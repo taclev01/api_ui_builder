@@ -1,0 +1,131 @@
+:root {
+  --surface-0: #f3f7ff;
+  --surface-1: #ffffff;
+  --surface-2: #edf3ff;
+  --line: #d7e0f0;
+  --text-main: #122033;
+  --text-muted: #5a6f8c;
+  --accent: #1359c8;
+  --danger: #d43f3a;
+}
+
+.app-layout {
+  height: 100vh;
+  color: var(--text-main);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(90deg, #0f2a4f, #154782);
+  color: #ffffff;
+  border-bottom: 1px solid #1e4984;
+}
+
+.brand {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.left-sider,
+.right-sider {
+  background: var(--surface-1);
+  border-right: 1px solid var(--line);
+  padding: 12px;
+  overflow: auto;
+}
+
+.right-sider {
+  border-right: 0;
+  border-left: 1px solid var(--line);
+}
+
+.flow-content {
+  background: radial-gradient(circle at top left, #f8fbff, #eef4ff 56%, #e7f0ff);
+}
+
+.flow-node {
+  min-width: 160px;
+  border: 1px solid #b9c7df;
+  border-radius: 10px;
+  background: var(--surface-1);
+  box-shadow: 0 4px 12px rgba(20, 48, 86, 0.09);
+  padding: 10px;
+  text-align: center;
+}
+
+.flow-node.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(19, 89, 200, 0.2);
+}
+
+.flow-node.is-auth-node {
+  border-style: dashed;
+  background: #fff9ef;
+}
+
+.flow-node-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+  color: var(--text-main);
+}
+
+.if-handle-label {
+  position: absolute;
+  bottom: -22px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #4b5f7b;
+}
+
+.if-handle-label-true {
+  left: 28%;
+}
+
+.if-handle-label-false {
+  left: 72%;
+}
+
+.edge-breakpoint-btn {
+  position: absolute;
+  border: 1px solid #d6deee;
+  background: #ffffff;
+  color: #33455f;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 2px 8px;
+  pointer-events: all;
+}
+
+.edge-breakpoint-btn.active {
+  border-color: #f3b8b6;
+  background: #ffe2e1;
+  color: var(--danger);
+}
+
+.inspector-card {
+  border: 1px solid var(--line);
+}
+
+.code-editor {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  min-height: 220px;
+}
+
+.code-editor .cm-editor {
+  min-height: 220px;
+  max-height: 420px;
+}
+
+.palette-list {
+  margin-top: 16px;
+}
