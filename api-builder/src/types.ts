@@ -9,6 +9,7 @@ export type ApiNodeType =
   | 'for_each_parallel'
   | 'join'
   | 'form_request'
+  | 'paginate_request'
   | 'python_request'
   | 'invoke_workflow'
   | 'auth'

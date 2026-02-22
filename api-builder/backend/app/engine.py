@@ -170,7 +170,7 @@ def run_execution(
             if var_name:
                 context.vars[str(var_name)] = value
             context.nodes[current_node_id] = {"status": "success", "output": {str(var_name): value}}
-        elif node_type in {"form_request", "python_request", "start_request", "start_python"}:
+        elif node_type in {"form_request", "paginate_request", "python_request", "start_request", "start_python"}:
             context.nodes[current_node_id] = {
                 "status": "success",
                 "output": {

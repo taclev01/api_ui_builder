@@ -12,6 +12,7 @@ const colorByType: Record<string, string> = {
   for_each_parallel: 'cyan',
   join: 'purple',
   form_request: 'geekblue',
+  paginate_request: 'blue',
   python_request: 'magenta',
   invoke_workflow: 'processing',
   auth: 'orange',

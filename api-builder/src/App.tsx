@@ -67,6 +67,12 @@ type NodeFormValues = {
   requestBackoff?: string;
   requestCircuitThreshold?: number;
   requestCircuitOpenMs?: number;
+  paginateStrategy?: string;
+  paginateItemsPath?: string;
+  paginateNextCursorPath?: string;
+  paginateHasMorePath?: string;
+  paginateMaxPages?: number;
+  paginatePageSize?: number;
   pythonFunctionName?: string;
   pythonAuthRef?: string;
   invokeTargetWorkflowId?: string;
@@ -242,6 +248,22 @@ function configToFormValues(node: ApiNode): NodeFormValues {
         requestCircuitThreshold: toNumberValue(config.circuitFailureThreshold, 5),
         requestCircuitOpenMs: toNumberValue(config.circuitOpenMs, 30000),
       };
+    case 'paginate_request':
+      return {
+        ...baseValues,
+        requestMethod: toStringValue(config.method, 'GET'),
+        requestUrl: toStringValue(config.url, 'https://api.example.com/resources'),
+        requestAuthRef: toStringValue(config.authRef),
+        paginateStrategy: toStringValue(config.strategy, 'next_url'),
+        paginateItemsPath: toStringValue(config.itemsPath, 'body.items'),
+        paginateNextCursorPath: toStringValue(config.nextCursorPath, 'body.next'),
+        paginateHasMorePath: toStringValue(config.hasMorePath, 'body.has_more'),
+        paginateMaxPages: toNumberValue(config.maxPages, 25),
+        paginatePageSize: toNumberValue(config.pageSize, 100),
+        requestTimeoutMs: toNumberValue(config.timeoutMs, 10000),
+        requestRetryAttempts: toNumberValue(config.retryAttempts, 3),
+        requestBackoff: toStringValue(config.backoff, 'exponential'),
+      };
     case 'python_request':
       return {
         ...baseValues,
@@ -346,6 +368,21 @@ function buildConfigFromValues(
         backoff: values.requestBackoff ?? 'exponential',
         circuitFailureThreshold: values.requestCircuitThreshold ?? 5,
         circuitOpenMs: values.requestCircuitOpenMs ?? 30000,
+      };
+    case 'paginate_request':
+      return {
+        method: values.requestMethod ?? 'GET',
+        url: values.requestUrl ?? '',
+        authRef: values.requestAuthRef ?? '',
+        strategy: values.paginateStrategy ?? 'next_url',
+        itemsPath: values.paginateItemsPath ?? 'body.items',
+        nextCursorPath: values.paginateNextCursorPath ?? 'body.next',
+        hasMorePath: values.paginateHasMorePath ?? 'body.has_more',
+        maxPages: values.paginateMaxPages ?? 25,
+        pageSize: values.paginatePageSize ?? 100,
+        timeoutMs: values.requestTimeoutMs ?? 10000,
+        retryAttempts: values.requestRetryAttempts ?? 3,
+        backoff: values.requestBackoff ?? 'exponential',
       };
     case 'python_request':
       return {
@@ -540,6 +577,64 @@ function renderNodeConfigFields(
           </Form.Item>
         </>
       );
+    case 'paginate_request':
+      return (
+        <>
+          <Form.Item label="Method" name="requestMethod">
+            <Select
+              options={['GET', 'POST'].map((method) => ({
+                label: method,
+                value: method,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item label="URL" name="requestUrl" rules={[{ required: true }]}>
+            <Input placeholder="https://api.example.com/resources" />
+          </Form.Item>
+          <Form.Item label="Auth Reference" name="requestAuthRef">
+            <Select allowClear options={authOptions} placeholder="Select auth node" />
+          </Form.Item>
+          <Form.Item label="Pagination Strategy" name="paginateStrategy">
+            <Select
+              options={[
+                { label: 'Next URL', value: 'next_url' },
+                { label: 'Cursor Param', value: 'cursor_param' },
+                { label: 'Page Number', value: 'page_number' },
+                { label: 'Offset/Limit', value: 'offset_limit' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="Items Path" name="paginateItemsPath">
+            <Input placeholder="body.items" />
+          </Form.Item>
+          <Form.Item label="Next Cursor Path" name="paginateNextCursorPath">
+            <Input placeholder="body.next" />
+          </Form.Item>
+          <Form.Item label="Has More Path" name="paginateHasMorePath">
+            <Input placeholder="body.has_more" />
+          </Form.Item>
+          <Form.Item label="Max Pages" name="paginateMaxPages">
+            <InputNumber min={1} max={10000} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Page Size" name="paginatePageSize">
+            <InputNumber min={1} max={10000} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Timeout (ms)" name="requestTimeoutMs">
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Retry Attempts" name="requestRetryAttempts">
+            <InputNumber min={0} max={10} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="Retry Backoff" name="requestBackoff">
+            <Select
+              options={[
+                { label: 'Exponential', value: 'exponential' },
+                { label: 'Fixed', value: 'fixed' },
+              ]}
+            />
+          </Form.Item>
+        </>
+      );
     case 'python_request':
       return (
         <>
@@ -638,33 +733,41 @@ function renderNodeConfigFields(
         <Form.List name="parametersList">
           {(fields, { add, remove }) => (
             <Space direction="vertical" style={{ width: '100%' }} size={8}>
-              {fields.map((field) => (
-                <Card key={field.key} size="small" className="parameter-item-card">
-                  <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
-                    <Input placeholder="date" />
-                  </Form.Item>
-                  <Form.Item label="Type" name={[field.name, 'type']}>
-                    <Select
-                      options={[
-                        { label: 'String', value: 'string' },
-                        { label: 'Number', value: 'number' },
-                        { label: 'Boolean', value: 'boolean' },
-                        { label: 'List', value: 'list' },
-                        { label: 'Object', value: 'object' },
-                      ]}
-                    />
-                  </Form.Item>
-                  <Form.Item label="Default Value" name={[field.name, 'defaultValue']}>
-                    <Input />
-                  </Form.Item>
-                  <Form.Item label="Description" name={[field.name, 'description']}>
-                    <Input />
-                  </Form.Item>
-                  <Button danger block onClick={() => remove(field.name)}>
-                    Remove Parameter
-                  </Button>
-                </Card>
-              ))}
+              <Collapse
+                className="parameter-collapse"
+                size="small"
+                items={fields.map((field, index) => ({
+                  key: String(field.key),
+                  label: `Parameter ${index + 1}`,
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                      <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
+                        <Input placeholder="date" />
+                      </Form.Item>
+                      <Form.Item label="Type" name={[field.name, 'type']}>
+                        <Select
+                          options={[
+                            { label: 'String', value: 'string' },
+                            { label: 'Number', value: 'number' },
+                            { label: 'Boolean', value: 'boolean' },
+                            { label: 'List', value: 'list' },
+                            { label: 'Object', value: 'object' },
+                          ]}
+                        />
+                      </Form.Item>
+                      <Form.Item label="Default Value" name={[field.name, 'defaultValue']}>
+                        <Input />
+                      </Form.Item>
+                      <Form.Item label="Description" name={[field.name, 'description']}>
+                        <Input />
+                      </Form.Item>
+                      <Button danger block onClick={() => remove(field.name)}>
+                        Remove Parameter
+                      </Button>
+                    </Space>
+                  ),
+                }))}
+              />
               <Button block onClick={() => add({ name: '', type: 'string', defaultValue: '', description: '' })}>
                 Add Parameter
               </Button>

@@ -146,6 +146,10 @@
   margin-top: 14px;
 }
 
+.parameter-collapse {
+  width: 100%;
+}
+
 .code-editor {
   border: 1px solid var(--line);
   border-radius: 8px;
