@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import repository as repo
 from .db import get_conn
@@ -15,15 +16,37 @@ from .models import (
     ExecutionOut,
     WorkflowCreate,
     WorkflowOut,
+    WorkflowSummaryOut,
     WorkflowVersionCreate,
+    WorkflowVersionDetailOut,
+    WorkflowVersionOut,
 )
 
 app = FastAPI(title="API Logic Builder Backend", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/workflows", response_model=list[WorkflowSummaryOut])
+def list_workflows() -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        return repo.list_workflows(conn)
 
 
 @app.post("/workflows", response_model=WorkflowOut)
@@ -47,7 +70,16 @@ def get_workflow(workflow_id: UUID) -> Any:
         return row
 
 
-@app.post("/workflows/{workflow_id}/versions")
+@app.get("/workflows/{workflow_id}/versions", response_model=list[WorkflowVersionOut])
+def list_workflow_versions(workflow_id: UUID) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        workflow = repo.get_workflow(conn, workflow_id)
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        return repo.list_workflow_versions(conn, workflow_id)
+
+
+@app.post("/workflows/{workflow_id}/versions", response_model=WorkflowVersionDetailOut)
 def create_workflow_version(workflow_id: UUID, payload: WorkflowVersionCreate) -> Any:
     with get_conn() as conn:
         workflow = repo.get_workflow(conn, workflow_id)
@@ -58,9 +90,20 @@ def create_workflow_version(workflow_id: UUID, payload: WorkflowVersionCreate) -
             conn,
             workflow_id=workflow_id,
             graph_json=payload.graph_json,
+            version_note=payload.version_note,
+            version_tag=payload.version_tag,
             is_published=payload.is_published,
             created_by=payload.created_by,
         )
+        return version
+
+
+@app.get("/workflow-versions/{workflow_version_id}", response_model=WorkflowVersionDetailOut)
+def get_workflow_version(workflow_version_id: UUID) -> dict[str, Any]:
+    with get_conn() as conn:
+        version = repo.get_workflow_version(conn, workflow_version_id)
+        if not version:
+            raise HTTPException(status_code=404, detail="Workflow version not found")
         return version
 
 
@@ -72,8 +115,7 @@ def _resolve_workflow_version_for_execution(conn: Any, payload: ExecutionCreate)
         if payload.published_only:
             return repo.get_latest_published_workflow_version(conn, payload.workflow_id)
 
-        # For v1, non-published mode still resolves to latest published for safety.
-        return repo.get_latest_published_workflow_version(conn, payload.workflow_id)
+        return repo.get_latest_workflow_version(conn, payload.workflow_id)
 
     return None
 

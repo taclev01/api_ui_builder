@@ -31,6 +31,7 @@ import {
   Switch,
   Tag,
   Typography,
+  message,
 } from 'antd';
 import { CopyOutlined, DeleteOutlined } from '@ant-design/icons';
 
@@ -47,6 +48,7 @@ import './App.css';
 const { Header, Content, Sider } = Layout;
 const EXTERNAL_DOCS_URL = 'https://reactflow.dev/learn';
 const MIN_PROXIMITY_DISTANCE = 170;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 type NodeFormValues = {
   label?: string;
@@ -110,6 +112,70 @@ type AuthItem = {
   authType?: string;
   tokenVar?: string;
   headerName?: string;
+};
+
+type WorkflowSummary = {
+  id: string;
+  name: string;
+  description: string | null;
+  latest_version_id: string | null;
+  latest_version_number: number | null;
+  latest_version_note: string | null;
+  latest_version_tag: string | null;
+};
+
+type WorkflowVersionSummary = {
+  id: string;
+  workflow_id: string;
+  version_number: number;
+  version_note: string | null;
+  version_tag: string | null;
+  is_published: boolean;
+  created_at: string;
+};
+
+type WorkflowVersionDetail = WorkflowVersionSummary & {
+  graph_json: GraphJson;
+};
+
+type WorkflowOutPayload = {
+  id: string;
+  name: string;
+  description: string | null;
+  created_by: string | null;
+  created_at: string;
+};
+
+type SaveFormValues = {
+  mode: 'new_workflow' | 'new_version';
+  workflowName: string;
+  workflowDescription?: string;
+  versionTag?: string;
+  versionNote?: string;
+  isPublished: boolean;
+};
+
+type GraphNodeJson = {
+  id: string;
+  type: ApiNode['data']['nodeType'];
+  position: { x: number; y: number };
+  data: ApiNode['data'];
+};
+
+type GraphEdgeJson = {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+  data?: ApiEdge['data'];
+  label?: string;
+};
+
+type GraphJson = {
+  entry_node_id: string | null;
+  nodes: GraphNodeJson[];
+  edges: GraphEdgeJson[];
 };
 
 const initialNodes: ApiNode[] = [
@@ -237,6 +303,61 @@ function nodeCenter(node: ApiNode): { x: number; y: number } {
   return { x, y };
 }
 
+async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    const fallback = `${response.status} ${response.statusText}`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      throw new Error(payload.detail ?? fallback);
+    } catch {
+      throw new Error(fallback);
+    }
+  }
+
+  return (await response.json()) as T;
+}
+
+function normalizedGraphJson(graph: GraphJson): GraphJson {
+  const nodes = [...graph.nodes]
+    .map((node) => ({
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      data: node.data,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const edges = [...graph.edges]
+    .map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? null,
+      targetHandle: edge.targetHandle ?? null,
+      data: edge.data ?? {},
+      label: edge.label,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  return {
+    entry_node_id: graph.entry_node_id,
+    nodes,
+    edges,
+  };
+}
+
+function graphSignature(graph: GraphJson): string {
+  return JSON.stringify(normalizedGraphJson(graph));
+}
+
 function toStringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
@@ -247,6 +368,71 @@ function toNumberValue(value: unknown, fallback: number): number {
 
 function toBoolValue(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function buildGraphJson(nodes: ApiNode[], edges: ApiEdge[]): GraphJson {
+  const persistedEdges = edges
+    .filter((edge) => edge.className !== 'temp-proximity-edge')
+    .map((edge) => {
+      const condition =
+        edge.data?.condition === 'true' || edge.data?.condition === 'false' ? edge.data.condition : undefined;
+      return {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+        data: {
+          breakpoint: Boolean(edge.data?.breakpoint),
+          condition,
+        },
+        label: condition ? condition.toUpperCase() : typeof edge.label === 'string' ? edge.label : undefined,
+      };
+    });
+
+  const persistedNodes = nodes.map((node) => ({
+    id: node.id,
+    type: node.data.nodeType,
+    position: node.position,
+    data: node.data,
+  }));
+
+  const entryNode = nodes.find((node) => isStartNodeType(node.data.nodeType));
+  return {
+    entry_node_id: entryNode?.id ?? null,
+    nodes: persistedNodes,
+    edges: persistedEdges,
+  };
+}
+
+function applyGraphJson(graph: GraphJson): { nodes: ApiNode[]; edges: ApiEdge[] } {
+  const nodes: ApiNode[] = (graph.nodes ?? []).map((node) => ({
+    id: node.id,
+    type: 'apiNode',
+    position: node.position ?? { x: 0, y: 0 },
+    data: node.data,
+  }));
+
+  const edges: ApiEdge[] = (graph.edges ?? []).map((edge) => {
+    const condition =
+      edge.data?.condition === 'true' || edge.data?.condition === 'false' ? edge.data.condition : undefined;
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? undefined,
+      targetHandle: edge.targetHandle ?? undefined,
+      type: 'breakpoint',
+      data: {
+        breakpoint: Boolean(edge.data?.breakpoint),
+        condition,
+      },
+      label: condition ? condition.toUpperCase() : edge.label,
+      style: edgeStyleForCondition(condition),
+    };
+  });
+
+  return { nodes, edges };
 }
 
 function configToFormValues(node: ApiNode): NodeFormValues {
@@ -777,7 +963,7 @@ function renderNodeConfigFields(
       return (
         <Form.List name="authList">
           {(fields, { add, remove }) => (
-            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Space orientation="vertical" style={{ width: '100%' }} size={8}>
               <Collapse
                 className="parameter-collapse"
                 size="small"
@@ -801,7 +987,7 @@ function renderNodeConfigFields(
                       </div>
                     ),
                     children: (
-                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                      <Space orientation="vertical" style={{ width: '100%' }} size={8}>
                         <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
                           <Input placeholder="default_auth" />
                         </Form.Item>
@@ -864,7 +1050,7 @@ function renderNodeConfigFields(
       return (
         <Form.List name="parametersList">
           {(fields, { add, remove }) => (
-            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Space orientation="vertical" style={{ width: '100%' }} size={8}>
               <Collapse
                 className="parameter-collapse"
                 size="small"
@@ -888,7 +1074,7 @@ function renderNodeConfigFields(
                       </div>
                     ),
                     children: (
-                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                      <Space orientation="vertical" style={{ width: '100%' }} size={8}>
                         <Form.Item label="Name" name={[field.name, 'name']} rules={[{ required: true }]}>
                           <Input placeholder="date" />
                         </Form.Item>
@@ -1027,11 +1213,21 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
   const [proximityEnabled, setProximityEnabled] = useState(true);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [pythonCode, setPythonCode] = useState('');
+  const [workflowName, setWorkflowName] = useState('API Workflow');
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>();
+  const [selectedWorkflowVersionId, setSelectedWorkflowVersionId] = useState<string>();
+  const [workflowOptions, setWorkflowOptions] = useState<WorkflowSummary[]>([]);
+  const [workflowVersions, setWorkflowVersions] = useState<WorkflowVersionSummary[]>([]);
+  const [lastSavedSignature, setLastSavedSignature] = useState<string>('');
+  const [isPersisting, setIsPersisting] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
 
   const [form] = Form.useForm<NodeFormValues>();
+  const [saveForm] = Form.useForm<SaveFormValues>();
   const parameterEntries = (Form.useWatch('parametersList', form) as ParameterItem[] | undefined) ?? [];
   const authEntries = (Form.useWatch('authList', form) as AuthItem[] | undefined) ?? [];
   const nodeCounterRef = useRef(4);
@@ -1051,6 +1247,30 @@ export default function App() {
     [selectedNode],
   );
 
+  const refreshWorkflows = useCallback(async () => {
+    const workflows = await apiRequest<WorkflowSummary[]>('/workflows');
+    setWorkflowOptions(workflows);
+  }, []);
+
+  const refreshWorkflowVersions = useCallback(async (workflowId: string) => {
+    const versions = await apiRequest<WorkflowVersionSummary[]>(`/workflows/${workflowId}/versions`);
+    setWorkflowVersions(versions);
+    return versions;
+  }, []);
+
+  const loadWorkflowVersion = useCallback(async (workflowVersionId: string) => {
+    const detail = await apiRequest<WorkflowVersionDetail>(`/workflow-versions/${workflowVersionId}`);
+    const flow = applyGraphJson(detail.graph_json);
+    const loadedSignature = graphSignature(buildGraphJson(flow.nodes, flow.edges));
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+    setSelectedWorkflowId(detail.workflow_id);
+    setSelectedWorkflowVersionId(detail.id);
+    setLastSavedSignature(loadedSignature);
+    setIsDirty(false);
+    message.success(`Loaded version v${detail.version_number}`);
+  }, []);
+
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
@@ -1060,10 +1280,38 @@ export default function App() {
   }, [edges]);
 
   useEffect(() => {
+    const signature = graphSignature(buildGraphJson(nodes, edges));
+    setIsDirty(lastSavedSignature !== '' && signature !== lastSavedSignature);
+  }, [edges, lastSavedSignature, nodes]);
+
+  useEffect(() => {
     if (!proximityEnabled) {
       setEdges((current) => current.filter((edge) => edge.className !== 'temp-proximity-edge'));
     }
   }, [proximityEnabled]);
+
+  useEffect(() => {
+    refreshWorkflows().catch((error: unknown) => {
+      message.error(`Failed to load workflows: ${String(error)}`);
+    });
+  }, [refreshWorkflows]);
+
+  useEffect(() => {
+    if (!selectedWorkflowId) {
+      setWorkflowVersions([]);
+      setSelectedWorkflowVersionId(undefined);
+      return;
+    }
+
+    const selectedWorkflow = workflowOptions.find((workflow) => workflow.id === selectedWorkflowId);
+    if (selectedWorkflow) {
+      setWorkflowName(selectedWorkflow.name);
+    }
+
+    refreshWorkflowVersions(selectedWorkflowId).catch((error: unknown) => {
+      message.error(`Failed to load versions: ${String(error)}`);
+    });
+  }, [refreshWorkflowVersions, selectedWorkflowId, workflowOptions]);
 
   useEffect(() => {
     if (!selectedNode) {
@@ -1595,6 +1843,123 @@ export default function App() {
     setPaletteOpen(false);
   }, []);
 
+  const onOpenSaveModal = useCallback(() => {
+    saveForm.setFieldsValue({
+      mode: selectedWorkflowId ? 'new_version' : 'new_workflow',
+      workflowName,
+      workflowDescription:
+        workflowOptions.find((workflow) => workflow.id === selectedWorkflowId)?.description ?? '',
+      versionTag: '',
+      versionNote: '',
+      isPublished: true,
+    });
+    setSaveModalOpen(true);
+  }, [saveForm, selectedWorkflowId, workflowName, workflowOptions]);
+
+  const onConfirmSave = useCallback(async () => {
+    const graph = buildGraphJson(nodes, edges);
+    const currentSignature = graphSignature(graph);
+
+    if (currentSignature === lastSavedSignature) {
+      message.info('No changes detected since last save.');
+      return;
+    }
+
+    const values = await saveForm.validateFields();
+    setIsPersisting(true);
+    try {
+      let workflowId = selectedWorkflowId ?? undefined;
+      const mode = values.mode ?? (selectedWorkflowId ? 'new_version' : 'new_workflow');
+      const trimmedName = (values.workflowName ?? '').trim();
+
+      if (mode === 'new_workflow' || !workflowId) {
+        if (!trimmedName) {
+          message.error('Workflow name is required.');
+          return;
+        }
+
+        const created = await apiRequest<WorkflowOutPayload>('/workflows', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: trimmedName,
+            description: values.workflowDescription ?? '',
+            created_by: 'ui-user',
+          }),
+        });
+        workflowId = created.id;
+        setSelectedWorkflowId(workflowId);
+        setWorkflowName(created.name);
+      }
+      if (!workflowId) {
+        message.error('Unable to resolve workflow for version save.');
+        return;
+      }
+
+      const version = await apiRequest<WorkflowVersionDetail>(`/workflows/${workflowId}/versions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          graph_json: graph,
+          version_note: values.versionNote ?? '',
+          version_tag: values.versionTag ?? '',
+          is_published: values.isPublished ?? true,
+          created_by: 'ui-user',
+        }),
+      });
+
+      setSelectedWorkflowVersionId(version.id);
+      setLastSavedSignature(currentSignature);
+      await refreshWorkflows();
+      await refreshWorkflowVersions(workflowId);
+      message.success(`Saved ${trimmedName || workflowName || 'workflow'} as version v${version.version_number}.`);
+      setSaveModalOpen(false);
+    } catch (error) {
+      message.error(`Failed to save workflow: ${String(error)}`);
+    } finally {
+      setIsPersisting(false);
+    }
+  }, [
+    edges,
+    lastSavedSignature,
+    nodes,
+    refreshWorkflowVersions,
+    refreshWorkflows,
+    saveForm,
+    selectedWorkflowId,
+    workflowName,
+  ]);
+
+  const onLoadSelectedVersion = useCallback(async () => {
+    if (!selectedWorkflowVersionId) {
+      message.warning('Select a workflow version to load.');
+      return;
+    }
+
+    if (isDirty) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: 'Discard unsaved changes?',
+          content: 'You have unsaved changes. Loading another version will replace current canvas state.',
+          okText: 'Discard & Load',
+          cancelText: 'Cancel',
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setIsPersisting(true);
+    try {
+      await loadWorkflowVersion(selectedWorkflowVersionId);
+    } catch (error) {
+      message.error(`Failed to load workflow version: ${String(error)}`);
+    } finally {
+      setIsPersisting(false);
+    }
+  }, [isDirty, loadWorkflowVersion, selectedWorkflowVersionId]);
+
   const onFormValuesChange = useCallback(
     (_: Partial<NodeFormValues>, allValues: NodeFormValues) => {
       if (!selectedNodeId) {
@@ -1702,14 +2067,51 @@ export default function App() {
       <Layout>
         <Sider width={280} theme="light" className="left-sider">
           <Card title="Workflow Tools" size="small">
-            <Space direction="vertical" style={{ width: '100%' }}>
+            <Space orientation="vertical" style={{ width: '100%' }}>
+              <Input
+                placeholder="Workflow Name"
+                value={workflowName}
+                onChange={(event) => setWorkflowName(event.target.value)}
+              />
+              <Select
+                allowClear
+                placeholder="Select workflow"
+                value={selectedWorkflowId}
+                options={workflowOptions.map((workflow) => ({
+                  value: workflow.id,
+                  label: workflow.latest_version_number
+                    ? `${workflow.name} (v${workflow.latest_version_number})`
+                    : workflow.name,
+                }))}
+                onChange={(value) => setSelectedWorkflowId(value)}
+              />
+              <Select
+                allowClear
+                placeholder="Select version"
+                value={selectedWorkflowVersionId}
+                disabled={!selectedWorkflowId}
+                options={workflowVersions.map((version) => ({
+                  value: version.id,
+                  label: `v${version.version_number}${version.version_tag ? ` (${version.version_tag})` : ''} • ${new Date(version.created_at).toLocaleString()}`,
+                }))}
+                onChange={(value) => setSelectedWorkflowVersionId(value)}
+              />
               <Button type="primary" block onClick={() => setPaletteOpen(true)}>
                 Add Node
+              </Button>
+              <Button block loading={isPersisting} onClick={onLoadSelectedVersion}>
+                Load Selected Version
+              </Button>
+              <Button block onClick={() => refreshWorkflows().catch((error) => message.error(String(error)))}>
+                Refresh Workflows
               </Button>
               <Button block onClick={onValidateGraph}>
                 Validate Graph
               </Button>
-              <Button block>Save Version</Button>
+              {isDirty ? <Tag color="orange">Unsaved changes</Tag> : <Tag color="green">Saved</Tag>}
+              <Button type="primary" block loading={isPersisting} onClick={onOpenSaveModal}>
+                Save Version
+              </Button>
             </Space>
           </Card>
           <Divider />
@@ -1721,7 +2123,7 @@ export default function App() {
                 key: category,
                 label: category,
                 children: (
-                  <Space direction="vertical" style={{ width: '100%' }} size={4}>
+                  <Space orientation="vertical" style={{ width: '100%' }} size={4}>
                     {allGroupedTemplates[category].map((template) => (
                       <Button
                         key={template.type}
@@ -1772,7 +2174,7 @@ export default function App() {
               </Typography.Text>
             ) : (
               <>
-                <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }} size="small">
+                <Space orientation="vertical" style={{ width: '100%', marginBottom: 16 }} size="small">
                   <div>
                     <Typography.Text strong>Node</Typography.Text>
                     <div>
@@ -1831,7 +2233,7 @@ export default function App() {
 
       <Drawer
         title="Command Palette"
-        width={420}
+        size="large"
         open={paletteOpen}
         onClose={() => {
           setPaletteOpen(false);
@@ -1851,7 +2253,7 @@ export default function App() {
               key: category,
               label: category,
               children: (
-                <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                <Space orientation="vertical" style={{ width: '100%' }} size={6}>
                   {groupedTemplates[category].map((template) => (
                     <Button
                       key={template.type}
@@ -1867,9 +2269,44 @@ export default function App() {
         />
       </Drawer>
 
+      <Modal
+        title="Save Workflow"
+        open={saveModalOpen}
+        onCancel={() => setSaveModalOpen(false)}
+        onOk={() => void onConfirmSave()}
+        confirmLoading={isPersisting}
+        okText="Save"
+      >
+        <Form form={saveForm} layout="vertical" initialValues={{ mode: 'new_workflow', isPublished: true }}>
+          <Form.Item label="Save Mode" name="mode" rules={[{ required: true }]}>
+            <Select
+              options={[
+                { label: 'Save as New Workflow', value: 'new_workflow' },
+                { label: 'Save New Version', value: 'new_version', disabled: !selectedWorkflowId },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="Workflow Name" name="workflowName" rules={[{ required: true }]}>
+            <Input placeholder="My API Flow" />
+          </Form.Item>
+          <Form.Item label="Workflow Description" name="workflowDescription">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item label="Version Tag (optional)" name="versionTag">
+            <Input placeholder="retry-tuning" />
+          </Form.Item>
+          <Form.Item label="Version Note" name="versionNote">
+            <Input.TextArea rows={3} placeholder="What changed in this version?" />
+          </Form.Item>
+          <Form.Item label="Published" name="isPublished" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       <Drawer
         title="Quick Reference"
-        width={460}
+        size="large"
         open={helpOpen}
         onClose={() => setHelpOpen(false)}
       >

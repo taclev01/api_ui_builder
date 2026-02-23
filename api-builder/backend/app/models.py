@@ -18,6 +18,8 @@ class WorkflowCreate(BaseModel):
 
 class WorkflowVersionCreate(BaseModel):
     graph_json: dict[str, Any]
+    version_note: str | None = None
+    version_tag: str | None = None
     is_published: bool = True
     created_by: str | None = None
 
@@ -49,6 +51,42 @@ class WorkflowOut(BaseModel):
     id: UUID
     name: str
     description: str | None
+    created_by: str | None
+    created_at: datetime
+
+
+class WorkflowSummaryOut(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    created_by: str | None
+    created_at: datetime
+    latest_version_id: UUID | None
+    latest_version_number: int | None
+    latest_version_created_at: datetime | None
+    latest_version_note: str | None
+    latest_version_tag: str | None
+
+
+class WorkflowVersionOut(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    version_number: int
+    version_note: str | None
+    version_tag: str | None
+    is_published: bool
+    created_by: str | None
+    created_at: datetime
+
+
+class WorkflowVersionDetailOut(BaseModel):
+    id: UUID
+    workflow_id: UUID
+    version_number: int
+    graph_json: dict[str, Any]
+    version_note: str | None
+    version_tag: str | None
+    is_published: bool
     created_by: str | None
     created_at: datetime
 

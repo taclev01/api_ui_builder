@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS api.workflow_versions (
   workflow_id UUID NOT NULL REFERENCES api.workflows(id) ON DELETE CASCADE,
   version_number INTEGER NOT NULL,
   graph_json JSONB NOT NULL,
+  version_note TEXT,
+  version_tag TEXT,
   is_published BOOLEAN NOT NULL DEFAULT FALSE,
   created_by TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -42,7 +44,7 @@ CREATE TABLE IF NOT EXISTS api.executions (
   trigger_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   idempotency_key TEXT,
   correlation_id TEXT,
-  parent_workflow_id UUID, REFERENCES api.executions(id) ON DELETE SET NULL,
+  parent_workflow_id UUID REFERENCES api.executions(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -75,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_execution_events_execution_id
 CREATE INDEX IF NOT EXISTS idx_execution_events_event_type
   ON api.execution_events(event_type);
 
-CREATE TABLE IF NOT EXISTS execution_snapshots (
+CREATE TABLE IF NOT EXISTS api.execution_snapshots (
   id BIGSERIAL PRIMARY KEY,
   execution_id UUID NOT NULL REFERENCES api.executions(id) ON DELETE CASCADE,
   event_index BIGINT NOT NULL,
@@ -87,7 +89,7 @@ CREATE TABLE IF NOT EXISTS execution_snapshots (
 CREATE INDEX IF NOT EXISTS idx_execution_snapshots_execution_id
   ON api.execution_snapshots(execution_id);
 
-CREATE TABLE IF NOT EXISTS saved_outputs (
+CREATE TABLE IF NOT EXISTS api.saved_outputs (
   id BIGSERIAL PRIMARY KEY,
   execution_id UUID NOT NULL REFERENCES api.executions(id) ON DELETE CASCADE,
   key TEXT NOT NULL,
