@@ -13,6 +13,17 @@ FastAPI + Postgres draft implementation for event-sourced workflow execution.
 3. Start API:
    - `uvicorn app.main:app --reload --port 8000`
 
+## Tests
+
+1. Install test dependency:
+   - `uv add -r backend/requirements-dev.txt`
+2. Run fast unit tests:
+   - `uv run pytest backend/tests -q`
+3. Run only mock API integration tests:
+   - `uv run pytest backend/tests -m integration -q`
+4. Run real Postgres testcontainer tests (requires Docker):
+   - `uv run pytest backend/tests -m postgres -q`
+
 ## Notes
 
 - This is a first draft for POC architecture.

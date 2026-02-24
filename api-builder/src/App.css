@@ -61,9 +61,27 @@
   box-shadow: 0 0 0 2px rgba(19, 89, 200, 0.2);
 }
 
+.flow-node.is-runtime-current {
+  border-color: #ff8c1a;
+  box-shadow: 0 0 0 3px rgba(255, 140, 26, 0.25), 0 0 0 8px rgba(255, 140, 26, 0.1);
+  animation: runtimeNodePulse 1.3s ease-in-out infinite;
+}
+
 .flow-node.is-auth-node {
   border-style: dashed;
   background: #fff9ef;
+}
+
+@keyframes runtimeNodePulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .flow-node-title {
@@ -195,4 +213,37 @@
 .code-editor .cm-editor {
   min-height: 220px;
   max-height: 420px;
+}
+
+.execution-events {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.execution-event-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #eef3fb;
+}
+
+.execution-event-item:last-child {
+  border-bottom: 0;
+}
+
+.execution-context {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+  margin: 0;
+  padding: 10px;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 12px;
 }

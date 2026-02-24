@@ -164,6 +164,7 @@ def get_execution_by_idempotency_key(conn: Connection, idempotency_key: str) -> 
         cur.execute(
             """
             SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
+                   final_context_json,
                    parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
             FROM api.executions
             WHERE idempotency_key = %s
@@ -204,6 +205,7 @@ def create_execution(
             )
             VALUES (%s, 'running', now(), %s, NULL, %s, %s, %s, %s, %s, %s)
             RETURNING id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
+                      final_context_json,
                       parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
             """,
             (
@@ -225,6 +227,7 @@ def get_execution(conn: Connection, execution_id: UUID) -> dict[str, Any] | None
         cur.execute(
             """
             SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
+                   final_context_json,
                    parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
             FROM api.executions
             WHERE id = %s
@@ -284,17 +287,27 @@ def update_execution_status(
                 SET status = %s, current_node_id = %s, final_context_json = %s, finished_at = now()
                 WHERE id = %s
                 """,
-                (status, current_node_id, final_context_json, execution_id),
+                (status, current_node_id, Jsonb(final_context_json) if final_context_json is not None else None, execution_id),
             )
         else:
-            cur.execute(
-                """
-                UPDATE api.executions
-                SET status = %s, current_node_id = %s
-                WHERE id = %s
-                """,
-                (status, current_node_id, execution_id),
-            )
+            if final_context_json is None:
+                cur.execute(
+                    """
+                    UPDATE api.executions
+                    SET status = %s, current_node_id = %s
+                    WHERE id = %s
+                    """,
+                    (status, current_node_id, execution_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE api.executions
+                    SET status = %s, current_node_id = %s, final_context_json = %s
+                    WHERE id = %s
+                    """,
+                    (status, current_node_id, Jsonb(final_context_json), execution_id),
+                )
 
 
 def create_snapshot(
@@ -344,5 +357,24 @@ def get_latest_snapshot_before(
             LIMIT 1
             """,
             (execution_id, event_index),
+        )
+        return cur.fetchone()
+
+
+def create_saved_output(
+    conn: Connection,
+    *,
+    execution_id: UUID,
+    key: str,
+    value_json: dict[str, Any] | list[Any] | str | int | float | bool | None,
+) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO api.saved_outputs(execution_id, key, value_json)
+            VALUES (%s, %s, %s)
+            RETURNING id, execution_id, key, value_json, created_at
+            """,
+            (execution_id, key, Jsonb(value_json)),
         )
         return cur.fetchone()

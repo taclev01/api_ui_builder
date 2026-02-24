@@ -22,6 +22,9 @@ export type FlowNodeData = {
   label: string;
   nodeType: ApiNodeType;
   config: Record<string, unknown>;
+  runtime?: {
+    isCurrent?: boolean;
+  };
 };
 
 export type FlowEdgeData = {

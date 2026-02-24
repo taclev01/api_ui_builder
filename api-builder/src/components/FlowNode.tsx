@@ -25,6 +25,7 @@ const colorByType: Record<string, string> = {
 
 export function FlowNode({ data, selected }: NodeProps) {
   const typedData = data as FlowNodeData;
+  const isRuntimeCurrent = Boolean(typedData.runtime?.isCurrent);
   const isAuthNode = typedData.nodeType === 'auth';
   const isParametersNode = typedData.nodeType === 'parameters';
   const isDataNode = isAuthNode || isParametersNode;
@@ -34,7 +35,9 @@ export function FlowNode({ data, selected }: NodeProps) {
   const help = NODE_HELP[typedData.nodeType];
 
   return (
-    <div className={`flow-node ${selected ? 'is-selected' : ''} ${isDataNode ? 'is-auth-node' : ''}`}>
+    <div
+      className={`flow-node ${selected ? 'is-selected' : ''} ${isDataNode ? 'is-auth-node' : ''} ${isRuntimeCurrent ? 'is-runtime-current' : ''}`}
+    >
       {!isDataNode && !isStartNode ? <Handle type="target" position={Position.Top} /> : null}
       <Tooltip title={help.description} placement="top">
         <div className="flow-node-title">{typedData.label}</div>

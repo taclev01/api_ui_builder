@@ -99,6 +99,7 @@ class ExecutionOut(BaseModel):
     finished_at: datetime | None
     debug_mode: bool
     current_node_id: str | None
+    final_context_json: dict[str, Any] | None = None
     parent_execution_id: UUID | None
     trigger_type: str | None
     trigger_payload: dict[str, Any]

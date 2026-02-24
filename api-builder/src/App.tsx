@@ -155,6 +155,35 @@ type SaveFormValues = {
   isPublished: boolean;
 };
 
+type ExecutionStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'aborted';
+
+type ExecutionOutPayload = {
+  id: string;
+  workflow_version_id: string;
+  status: ExecutionStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  debug_mode: boolean;
+  current_node_id: string | null;
+  final_context_json: Record<string, unknown> | null;
+  parent_execution_id: string | null;
+  trigger_type: string | null;
+  trigger_payload: Record<string, unknown>;
+  idempotency_key: string | null;
+  correlation_id: string | null;
+};
+
+type ExecutionEventPayload = {
+  id: number;
+  execution_id: string;
+  event_index: number;
+  event_type: string;
+  node_id: string | null;
+  edge_id: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+};
+
 type GraphNodeJson = {
   id: string;
   type: ApiNode['data']['nodeType'];
@@ -1214,6 +1243,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
+  const [runDrawerOpen, setRunDrawerOpen] = useState(false);
   const [proximityEnabled, setProximityEnabled] = useState(true);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [pythonCode, setPythonCode] = useState('');
@@ -1222,6 +1252,11 @@ export default function App() {
   const [selectedWorkflowVersionId, setSelectedWorkflowVersionId] = useState<string>();
   const [workflowOptions, setWorkflowOptions] = useState<WorkflowSummary[]>([]);
   const [workflowVersions, setWorkflowVersions] = useState<WorkflowVersionSummary[]>([]);
+  const [runInputJson, setRunInputJson] = useState('{\n  "token": "demo-token"\n}');
+  const [activeExecution, setActiveExecution] = useState<ExecutionOutPayload | null>(null);
+  const [executionEvents, setExecutionEvents] = useState<ExecutionEventPayload[]>([]);
+  const [isRunningFlow, setIsRunningFlow] = useState(false);
+  const [isRefreshingExecution, setIsRefreshingExecution] = useState(false);
   const [lastSavedSignature, setLastSavedSignature] = useState<string>('');
   const [isPersisting, setIsPersisting] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
@@ -1246,6 +1281,25 @@ export default function App() {
     () => (selectedNode ? NODE_HELP[selectedNode.data.nodeType] : null),
     [selectedNode],
   );
+  const renderNodes = useMemo(() => {
+    const isActive =
+      activeExecution &&
+      ['queued', 'running', 'paused'].includes(activeExecution.status) &&
+      activeExecution.current_node_id;
+    if (!isActive) {
+      return nodes;
+    }
+    return nodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        runtime: {
+          ...node.data.runtime,
+          isCurrent: node.id === activeExecution.current_node_id,
+        },
+      },
+    }));
+  }, [activeExecution, nodes]);
 
   const refreshWorkflows = useCallback(async () => {
     const workflows = await apiRequest<WorkflowSummary[]>('/workflows');
@@ -2044,6 +2098,134 @@ export default function App() {
     });
   }, [edges, nodes]);
 
+  const refreshExecutionState = useCallback(async (executionId: string) => {
+    const [execution, events] = await Promise.all([
+      apiRequest<ExecutionOutPayload>(`/executions/${executionId}`),
+      apiRequest<ExecutionEventPayload[]>(`/executions/${executionId}/events`),
+    ]);
+    setActiveExecution(execution);
+    setExecutionEvents(events);
+    return execution;
+  }, []);
+
+  const onStartExecution = useCallback(async () => {
+    if (!selectedWorkflowVersionId && !selectedWorkflowId) {
+      message.warning('Select a workflow and version before running.');
+      return;
+    }
+
+    if (isDirty) {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: 'Run last saved version?',
+          content:
+            'You have unsaved canvas changes. Play will run the selected saved workflow version, not unsaved edits.',
+          okText: 'Run Saved Version',
+          cancelText: 'Cancel',
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    let parsedInput: Record<string, unknown>;
+    try {
+      const payload = JSON.parse(runInputJson);
+      if (!payload || Array.isArray(payload) || typeof payload !== 'object') {
+        message.error('Execution input JSON must be an object.');
+        return;
+      }
+      parsedInput = payload as Record<string, unknown>;
+    } catch {
+      message.error('Execution input must be valid JSON.');
+      return;
+    }
+
+    setIsRunningFlow(true);
+    try {
+      const body =
+        selectedWorkflowVersionId
+          ? {
+              workflow_version_id: selectedWorkflowVersionId,
+              input_json: parsedInput,
+              debug_mode: true,
+              trigger_type: 'manual',
+              trigger_payload: {},
+            }
+          : {
+              workflow_id: selectedWorkflowId,
+              published_only: false,
+              input_json: parsedInput,
+              debug_mode: true,
+              trigger_type: 'manual',
+              trigger_payload: {},
+            };
+
+      const execution = await apiRequest<ExecutionOutPayload>('/executions', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setRunDrawerOpen(true);
+      await refreshExecutionState(execution.id);
+      message.success(`Execution ${execution.id.slice(0, 8)} started.`);
+    } catch (error) {
+      message.error(`Failed to start execution: ${String(error)}`);
+    } finally {
+      setIsRunningFlow(false);
+    }
+  }, [isDirty, refreshExecutionState, runInputJson, selectedWorkflowId, selectedWorkflowVersionId]);
+
+  const onRefreshExecution = useCallback(async () => {
+    if (!activeExecution?.id) {
+      return;
+    }
+    setIsRefreshingExecution(true);
+    try {
+      await refreshExecutionState(activeExecution.id);
+    } catch (error) {
+      message.error(`Failed to refresh execution: ${String(error)}`);
+    } finally {
+      setIsRefreshingExecution(false);
+    }
+  }, [activeExecution?.id, refreshExecutionState]);
+
+  const onDebugCommand = useCallback(
+    async (action: 'resume' | 'step' | 'abort') => {
+      if (!activeExecution?.id) {
+        return;
+      }
+      setIsRefreshingExecution(true);
+      try {
+        await apiRequest<ExecutionOutPayload>(`/executions/${activeExecution.id}/debug/${action}`, {
+          method: 'POST',
+        });
+        await refreshExecutionState(activeExecution.id);
+        message.success(`Debug command '${action}' sent.`);
+      } catch (error) {
+        message.error(`Debug command failed: ${String(error)}`);
+      } finally {
+        setIsRefreshingExecution(false);
+      }
+    },
+    [activeExecution?.id, refreshExecutionState],
+  );
+
+  useEffect(() => {
+    if (!runDrawerOpen || !activeExecution?.id) {
+      return;
+    }
+    if (!['queued', 'running', 'paused'].includes(activeExecution.status)) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      refreshExecutionState(activeExecution.id).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeExecution?.id, activeExecution?.status, refreshExecutionState, runDrawerOpen]);
+
   return (
     <Layout className="app-layout">
       <Header className="app-header">
@@ -2060,7 +2242,9 @@ export default function App() {
           <Button type="primary" onClick={() => setPaletteOpen(true)}>
             Open Command Palette
           </Button>
-          <Button>Run (POC)</Button>
+          <Button type="primary" loading={isRunningFlow} onClick={() => void onStartExecution()}>
+            Play
+          </Button>
         </Space>
       </Header>
 
@@ -2112,6 +2296,9 @@ export default function App() {
               <Button type="primary" block loading={isPersisting} onClick={onOpenSaveModal}>
                 Save Version
               </Button>
+              <Button block loading={isRunningFlow} onClick={() => void onStartExecution()}>
+                Play Selected Version
+              </Button>
             </Space>
           </Card>
           <Divider />
@@ -2143,7 +2330,7 @@ export default function App() {
 
         <Content className="flow-content">
           <ReactFlow<ApiNode, ApiEdge>
-            nodes={nodes}
+            nodes={renderNodes}
             edges={edges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
@@ -2322,6 +2509,101 @@ export default function App() {
         <Button href={EXTERNAL_DOCS_URL} target="_blank" rel="noreferrer">
           Open External Documentation
         </Button>
+      </Drawer>
+
+      <Drawer
+        title="Run & Debug"
+        size="large"
+        open={runDrawerOpen}
+        onClose={() => setRunDrawerOpen(false)}
+      >
+        <Space orientation="vertical" style={{ width: '100%' }} size={12}>
+          <Typography.Text strong>Execution Input JSON</Typography.Text>
+          <Input.TextArea
+            rows={7}
+            value={runInputJson}
+            onChange={(event) => setRunInputJson(event.target.value)}
+            placeholder='{"token":"demo-token"}'
+          />
+          <Space>
+            <Button type="primary" loading={isRunningFlow} onClick={() => void onStartExecution()}>
+              Start New Run
+            </Button>
+            <Button loading={isRefreshingExecution} onClick={() => void onRefreshExecution()}>
+              Refresh
+            </Button>
+          </Space>
+
+          {activeExecution ? (
+            <>
+              <Divider style={{ margin: '8px 0' }} />
+              <div>
+                <Tag color={activeExecution.status === 'completed' ? 'green' : activeExecution.status === 'failed' ? 'red' : activeExecution.status === 'paused' ? 'orange' : 'blue'}>
+                  {activeExecution.status.toUpperCase()}
+                </Tag>
+                <Typography.Text code>{activeExecution.id}</Typography.Text>
+              </div>
+              <Typography.Text type="secondary">
+                Current Node: {activeExecution.current_node_id ?? 'n/a'}
+              </Typography.Text>
+
+              <Space>
+                <Button
+                  disabled={activeExecution.status !== 'paused'}
+                  loading={isRefreshingExecution}
+                  onClick={() => void onDebugCommand('resume')}
+                >
+                  Resume
+                </Button>
+                <Button
+                  disabled={activeExecution.status !== 'paused'}
+                  loading={isRefreshingExecution}
+                  onClick={() => void onDebugCommand('step')}
+                >
+                  Step
+                </Button>
+                <Button
+                  danger
+                  disabled={!['paused', 'running', 'queued'].includes(activeExecution.status)}
+                  loading={isRefreshingExecution}
+                  onClick={() => void onDebugCommand('abort')}
+                >
+                  Abort
+                </Button>
+              </Space>
+
+              <Typography.Text strong>Events</Typography.Text>
+              <div className="execution-events">
+                {executionEvents.length === 0 ? (
+                  <Typography.Text type="secondary">No events yet.</Typography.Text>
+                ) : (
+                  executionEvents
+                    .slice()
+                    .reverse()
+                    .map((event) => (
+                      <div key={event.id} className="execution-event-item">
+                        <Typography.Text code>
+                          #{event.event_index} {event.event_type}
+                        </Typography.Text>
+                        {event.node_id ? <Typography.Text type="secondary"> node: {event.node_id}</Typography.Text> : null}
+                      </div>
+                    ))
+                )}
+              </div>
+
+              {activeExecution.final_context_json ? (
+                <>
+                  <Typography.Text strong>Final Context</Typography.Text>
+                  <pre className="execution-context">
+                    {JSON.stringify(activeExecution.final_context_json, null, 2)}
+                  </pre>
+                </>
+              ) : null}
+            </>
+          ) : (
+            <Alert type="info" showIcon message="No active execution yet. Start a run to use debug controls." />
+          )}
+        </Space>
       </Drawer>
     </Layout>
   );

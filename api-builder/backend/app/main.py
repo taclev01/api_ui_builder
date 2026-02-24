@@ -161,13 +161,8 @@ def create_execution(payload: ExecutionCreate) -> Any:
             repo.append_event(
                 conn,
                 execution_id=execution["id"],
-                event_type="NODE_FAILED",
+                event_type="RUN_FAILED",
                 payload={"error": str(exc)},
-            )
-            repo.update_execution_status(
-                conn,
-                execution_id=execution["id"],
-                status="failed",
             )
 
         refreshed = repo.get_execution(conn, execution["id"])
