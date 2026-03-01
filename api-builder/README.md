@@ -1,73 +1,48 @@
-# React + TypeScript + Vite
+# API UI Builder (POC)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+TypeScript/React workflow editor (`reactflow`, `antd`, `codemirror`) with a FastAPI + Postgres backend execution engine.
 
-Currently, two official plugins are available:
+## One-command local setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+From `/Users/tonyclevenger/GitRepos/api_ui_builder/api-builder`:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+./scripts/setup_from_scratch.sh
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Optional flags:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+./scripts/setup_from_scratch.sh \
+  --database-url "postgresql://postgres:postgres@localhost:5432/api_builder" \
+  --mock-api-base-url "http://localhost:8010" \
+  --force-new-version
 ```
+
+This will:
+
+- install Python dependencies via `uv sync`
+- install frontend dependencies via `npm ci`
+- create/apply DB schema migrations in `backend/sql`
+- seed a runnable example workflow named `first workflow` (published)
+
+## Run services
+
+Use 3 terminals:
+
+```bash
+uv run uvicorn backend.app.main:app --reload --port 8000
+uv run uvicorn mock_api.app.main:app --reload --port 8010
+npm run dev
+```
+
+Frontend: [http://localhost:5173](http://localhost:5173)
+
+## Seed-only script
+
+If dependencies are already installed, run just DB bootstrap + seed:
+
+```bash
+uv run python backend/scripts/bootstrap_from_scratch.py
+```
+

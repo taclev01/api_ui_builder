@@ -44,6 +44,7 @@
 
 .flow-content {
   background: radial-gradient(circle at top left, #f8fbff, #eef4ff 56%, #e7f0ff);
+  position: relative;
 }
 
 .flow-node {
@@ -65,6 +66,11 @@
   border-color: #ff8c1a;
   box-shadow: 0 0 0 3px rgba(255, 140, 26, 0.25), 0 0 0 8px rgba(255, 140, 26, 0.1);
   animation: runtimeNodePulse 1.3s ease-in-out infinite;
+}
+
+.flow-node.is-runtime-visited:not(.is-runtime-current) {
+  border-color: #2b6cb0;
+  box-shadow: 0 0 0 2px rgba(43, 108, 176, 0.18);
 }
 
 .flow-node.is-auth-node {
@@ -246,4 +252,70 @@
   max-height: 280px;
   overflow: auto;
   font-size: 12px;
+}
+
+.debug-node-panels {
+  width: 100%;
+}
+
+.debug-node-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.floating-debug-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: auto;
+  max-width: calc(100% - 24px);
+  z-index: 8;
+}
+
+.debug-toolbar-card .ant-card-body {
+  padding: 10px;
+}
+
+.floating-node-panels {
+  position: absolute;
+  top: 220px;
+  right: 12px;
+  width: min(760px, calc(100% - 24px));
+  z-index: 8;
+  display: grid;
+  gap: 10px;
+}
+
+.floating-node-panels-1 {
+  grid-template-columns: minmax(320px, 520px);
+}
+
+.floating-node-panels-2 {
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+}
+
+.floating-node-panel {
+  max-height: calc(100vh - 300px);
+  overflow: auto;
+  border: 1px solid var(--line);
+}
+
+.floating-node-panel.is-active {
+  border-color: #1d5fd2;
+  box-shadow: 0 0 0 2px rgba(29, 95, 210, 0.2);
+}
+
+.floating-node-panel .ant-card-head {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: #f7faff;
+  border-bottom: 1px solid var(--line);
+}
+
+.floating-node-panel-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }

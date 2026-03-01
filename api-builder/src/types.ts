@@ -24,6 +24,7 @@ export type FlowNodeData = {
   config: Record<string, unknown>;
   runtime?: {
     isCurrent?: boolean;
+    isVisited?: boolean;
   };
 };
 

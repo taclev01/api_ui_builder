@@ -421,7 +421,8 @@ def _http_request(
         raise RuntimeError(f"Request failed: {exc}") from exc
 
     duration_ms = int((time.perf_counter() - started) * 1000)
-    content_type = (response_headers.get("Content-Type") or "").lower()
+    header_lookup = {str(k).lower(): v for k, v in response_headers.items()}
+    content_type = str(header_lookup.get("content-type") or "").lower()
     text_body = raw.decode("utf-8", errors="replace")
     if "application/json" in content_type:
         try:
@@ -852,6 +853,7 @@ def _execute_node(
             conn,
             workflow_version_id=child_version["id"],
             input_json=child_input,
+            effective_graph_json=child_version.get("graph_json"),
             debug_mode=False,
             parent_execution_id=execution_id,
             trigger_type="workflow",
@@ -924,6 +926,7 @@ def run_execution(
     start_node_id: str | None = None,
     context_override: ExecutionContext | None = None,
     is_resume: bool = False,
+    step_once: bool = False,
 ) -> None:
     if call_depth > settings.max_call_depth:
         raise RuntimeError(f"Maximum workflow call depth exceeded: {settings.max_call_depth}")
@@ -1069,6 +1072,31 @@ def run_execution(
             _write_snapshot_if_needed(conn, execution_id, context)
             return
 
+        if step_once:
+            repo.append_event(
+                conn,
+                execution_id=execution_id,
+                event_type="EDGE_TRAVERSED",
+                edge_id=edge.get("id"),
+                payload={"source": edge.get("source"), "target": edge.get("target")},
+            )
+            repo.append_event(
+                conn,
+                execution_id=execution_id,
+                event_type="STEP_PAUSED",
+                edge_id=edge.get("id"),
+                payload={"source": edge.get("source"), "target": edge.get("target")},
+            )
+            repo.update_execution_status(
+                conn,
+                execution_id=execution_id,
+                status="paused",
+                current_node_id=edge.get("target"),
+                final_context_json=context.to_json(),
+            )
+            _write_snapshot_if_needed(conn, execution_id, context)
+            return
+
         if edge.get("breakpoint"):
             repo.append_event(
                 conn,
@@ -1137,4 +1165,5 @@ def continue_execution_from_pause(
         start_node_id=start_node_id,
         context_override=context,
         is_resume=True,
+        step_once=action == "step",
     )

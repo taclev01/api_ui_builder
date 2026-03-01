@@ -2,16 +2,26 @@
 
 FastAPI + Postgres draft implementation for event-sourced workflow execution.
 
-## Run
+## Bootstrap (recommended)
+
+From `/Users/tonyclevenger/GitRepos/api_ui_builder/api-builder`:
+
+```bash
+./scripts/setup_from_scratch.sh
+```
+
+This installs dependencies, creates/applies DB schema, and seeds a runnable example workflow (`first workflow`) with a published version.
+
+## Manual Run
 
 1. Create DB and apply schema:
    - `psql < backend/sql/001_init.sql`
-   - If upgrading an existing DB: `psql < backend/sql/002_execution_lineage.sql`
    - If upgrading an existing DB: `psql < backend/sql/003_workflow_version_metadata.sql`
+   - If upgrading an existing DB: `psql < backend/sql/004_execution_effective_graph.sql`
 2. Set env vars:
    - `DATABASE_URL=postgresql://user:pass@localhost:5432/api_builder`
 3. Start API:
-   - `uvicorn app.main:app --reload --port 8000`
+   - `uv run uvicorn backend.app.main:app --reload --port 8000`
 
 ## Tests
 

@@ -165,7 +165,8 @@ def get_execution_by_idempotency_key(conn: Connection, idempotency_key: str) -> 
             """
             SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
                    final_context_json,
-                   parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
+                   parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id,
+                   effective_graph_json
             FROM api.executions
             WHERE idempotency_key = %s
             LIMIT 1
@@ -180,6 +181,7 @@ def create_execution(
     *,
     workflow_version_id: UUID,
     input_json: dict[str, Any],
+    effective_graph_json: dict[str, Any] | None,
     debug_mode: bool,
     parent_execution_id: UUID | None,
     trigger_type: str | None,
@@ -197,21 +199,24 @@ def create_execution(
               debug_mode,
               current_node_id,
               input_json,
+              effective_graph_json,
               parent_execution_id,
               trigger_type,
               trigger_payload,
               idempotency_key,
               correlation_id
             )
-            VALUES (%s, 'running', now(), %s, NULL, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, 'running', now(), %s, NULL, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
                       final_context_json,
-                      parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
+                      parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id,
+                      effective_graph_json
             """,
             (
                 workflow_version_id,
                 debug_mode,
                 Jsonb(input_json),
+                Jsonb(effective_graph_json) if effective_graph_json is not None else None,
                 parent_execution_id,
                 trigger_type,
                 Jsonb(trigger_payload),
@@ -228,7 +233,8 @@ def get_execution(conn: Connection, execution_id: UUID) -> dict[str, Any] | None
             """
             SELECT id, workflow_version_id, status, started_at, finished_at, debug_mode, current_node_id,
                    final_context_json,
-                   parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id
+                   parent_execution_id, trigger_type, trigger_payload, idempotency_key, correlation_id,
+                   effective_graph_json
             FROM api.executions
             WHERE id = %s
             """,

@@ -15,7 +15,6 @@ import {
   type NodeChange,
 } from '@xyflow/react';
 import {
-  Alert,
   Button,
   Card,
   Collapse,
@@ -30,15 +29,25 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
-import { CopyOutlined, DeleteOutlined } from '@ant-design/icons';
+import type { FormInstance } from 'antd';
+import {
+  CaretRightOutlined,
+  CloseOutlined,
+  DeleteOutlined,
+  RedoOutlined,
+  StepForwardOutlined,
+  StopOutlined,
+  SyncOutlined,
+} from '@ant-design/icons';
 
 import { BreakpointEdge } from './components/BreakpointEdge';
 import { CodeEditor } from './components/CodeEditor';
 import { FlowNode } from './components/FlowNode';
-import { NODE_HELP, QUICK_REFERENCE } from './nodeHelp';
+import { QUICK_REFERENCE } from './nodeHelp';
 import { NODE_TEMPLATES } from './nodeTemplates';
 import type { ApiEdge, ApiNode, NodeCategory, NodeTemplate } from './types';
 
@@ -182,6 +191,21 @@ type ExecutionEventPayload = {
   edge_id: string | null;
   payload: Record<string, unknown>;
   occurred_at: string;
+};
+
+type ReplayResult = {
+  startedAt: string;
+  request: {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    body?: unknown;
+  };
+  response?: {
+    status: number;
+    body: unknown;
+  };
+  error?: string;
 };
 
 type GraphNodeJson = {
@@ -383,8 +407,21 @@ function normalizedGraphJson(graph: GraphJson): GraphJson {
   };
 }
 
-function graphSignature(graph: GraphJson): string {
-  return JSON.stringify(normalizedGraphJson(graph));
+function graphSignature(graph: GraphJson, options?: { ignoreBreakpoint?: boolean }): string {
+  const normalized = normalizedGraphJson(graph);
+  if (options?.ignoreBreakpoint) {
+    return JSON.stringify({
+      ...normalized,
+      edges: normalized.edges.map((edge) => ({
+        ...edge,
+        data: {
+          ...(edge.data ?? {}),
+          breakpoint: false,
+        },
+      })),
+    });
+  }
+  return JSON.stringify(normalized);
 }
 
 function toStringValue(value: unknown, fallback = ''): string {
@@ -397,6 +434,31 @@ function toNumberValue(value: unknown, fallback: number): number {
 
 function toBoolValue(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function resolveDataPath(root: unknown, path: string): unknown {
+  if (!path.trim()) {
+    return root;
+  }
+  const normalized = path.startsWith('$.') ? path.slice(2) : path.startsWith('$') ? path.slice(1) : path;
+  const parts = normalized.split('.').filter(Boolean);
+  let current: unknown = root;
+  for (const part of parts) {
+    if (Array.isArray(current)) {
+      const idx = Number(part);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) {
+        return undefined;
+      }
+      current = current[idx];
+      continue;
+    }
+    if (current && typeof current === 'object') {
+      current = (current as Record<string, unknown>)[part];
+      continue;
+    }
+    return undefined;
+  }
+  return current;
 }
 
 function buildGraphJson(nodes: ApiNode[], edges: ApiEdge[]): GraphJson {
@@ -740,6 +802,7 @@ function renderNodeConfigFields(
   authOptions: Array<{ label: string; value: string }>,
   parameterEntries: ParameterItem[],
   authEntries: AuthItem[],
+  form?: FormInstance<NodeFormValues>,
 ): ReactNode {
   switch (node.data.nodeType) {
     case 'start_python':
@@ -989,6 +1052,7 @@ function renderNodeConfigFields(
         </>
       );
     case 'auth':
+      const liveAuthEntries = (form?.getFieldValue('authList') as AuthItem[] | undefined) ?? authEntries;
       return (
         <Form.List name="authList">
           {(fields, { add, remove }) => (
@@ -997,7 +1061,7 @@ function renderNodeConfigFields(
                 className="parameter-collapse"
                 size="small"
                 items={fields.map((field, index) => {
-                  const current = authEntries[index];
+                  const current = liveAuthEntries[index];
                   const displayName = current?.name?.trim() || `Auth ${index + 1}`;
                   return {
                     key: String(field.key),
@@ -1076,6 +1140,8 @@ function renderNodeConfigFields(
         </Form.Item>
       );
     case 'parameters':
+      const liveParameterEntries =
+        (form?.getFieldValue('parametersList') as ParameterItem[] | undefined) ?? parameterEntries;
       return (
         <Form.List name="parametersList">
           {(fields, { add, remove }) => (
@@ -1084,7 +1150,7 @@ function renderNodeConfigFields(
                 className="parameter-collapse"
                 size="small"
                 items={fields.map((field, index) => {
-                  const current = parameterEntries[index];
+                  const current = liveParameterEntries[index];
                   const displayName = current?.name?.trim() || `Parameter ${index + 1}`;
                   return {
                     key: String(field.key),
@@ -1236,56 +1302,254 @@ function validateGraph(nodes: ApiNode[], edges: ApiEdge[]): string[] {
   return Array.from(new Set(errors));
 }
 
+type NodeFloatingPanelProps = {
+  node: ApiNode;
+  authOptions: Array<{ label: string; value: string }>;
+  nodeDebugState: Record<string, unknown> | null;
+  nodeDebugEvents: ExecutionEventPayload[];
+  replayResult: ReplayResult | undefined;
+  replayLoading: boolean;
+  isActive: boolean;
+  onRegisterDraftReader: (
+    nodeId: string,
+    reader: (() => { values: NodeFormValues; pythonCode: string }) | null,
+  ) => void;
+  onDraftChange: (nodeId: string, draft: { values: NodeFormValues; pythonCode: string }) => void;
+  onPatchNode: (nodeId: string, label: string, config: Record<string, unknown>) => void;
+  onReplayNode: (nodeId: string) => void;
+  onClose: (nodeId: string) => void;
+};
+
+function NodeFloatingPanel({
+  node,
+  authOptions,
+  nodeDebugState,
+  nodeDebugEvents,
+  replayResult,
+  replayLoading,
+  isActive,
+  onRegisterDraftReader,
+  onDraftChange,
+  onPatchNode,
+  onReplayNode,
+  onClose,
+}: NodeFloatingPanelProps): ReactNode {
+  const [form] = Form.useForm<NodeFormValues>();
+  const [pythonCode, setPythonCode] = useState('');
+  const parameterEntries =
+    (Form.useWatch('parametersList', form) as ParameterItem[] | undefined) ??
+    (Array.isArray(node.data.config.parameters) ? (node.data.config.parameters as ParameterItem[]) : []);
+  const authEntries =
+    (Form.useWatch('authList', form) as AuthItem[] | undefined) ??
+    (Array.isArray(node.data.config.authList) ? (node.data.config.authList as AuthItem[]) : []);
+
+  useEffect(() => {
+    const formValues = configToFormValues(node);
+    form.setFieldsValue(formValues);
+    if (node.data.nodeType === 'python_request' || node.data.nodeType === 'start_python') {
+      setPythonCode(toStringValue(node.data.config.code));
+    } else {
+      setPythonCode('');
+    }
+  }, [form, node]);
+
+  const onFormValuesChange = useCallback(
+    (_: Partial<NodeFormValues>, allValues: NodeFormValues) => {
+      const nextLabel = (allValues.label ?? node.data.label).toString();
+      const nextConfig = buildConfigFromValues(node, allValues, pythonCode);
+      onDraftChange(node.id, { values: allValues, pythonCode });
+      onPatchNode(node.id, nextLabel, nextConfig);
+    },
+    [node, onDraftChange, onPatchNode, pythonCode],
+  );
+
+  const onPythonCodeChange = useCallback(
+    (nextCode: string) => {
+      setPythonCode(nextCode);
+      const allValues = form.getFieldsValue();
+      const nextLabel = (allValues.label ?? node.data.label).toString();
+      const nextConfig = buildConfigFromValues(node, allValues, nextCode);
+      onDraftChange(node.id, { values: allValues as NodeFormValues, pythonCode: nextCode });
+      onPatchNode(node.id, nextLabel, nextConfig);
+    },
+    [form, node, onDraftChange, onPatchNode],
+  );
+  const commitDraft = useCallback(() => {
+    const values = form.getFieldsValue(true) as NodeFormValues;
+    const nextLabel = (values.label ?? node.data.label).toString();
+    const nextConfig = buildConfigFromValues(node, values, pythonCode);
+    onDraftChange(node.id, { values, pythonCode });
+    onPatchNode(node.id, nextLabel, nextConfig);
+  }, [form, node, onDraftChange, onPatchNode, pythonCode]);
+
+  const onClosePanel = useCallback(() => {
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    commitDraft();
+    onClose(node.id);
+  }, [commitDraft, node.id, onClose]);
+
+  useEffect(() => {
+    onDraftChange(node.id, { values: form.getFieldsValue(true) as NodeFormValues, pythonCode });
+    onRegisterDraftReader(node.id, () => ({
+      values: form.getFieldsValue(true) as NodeFormValues,
+      pythonCode,
+    }));
+    return () => onRegisterDraftReader(node.id, null);
+  }, [form, node.id, onDraftChange, onRegisterDraftReader, pythonCode]);
+  const nodeStatus =
+    typeof nodeDebugState?.status === 'string'
+      ? nodeDebugState.status
+      : typeof nodeDebugState?.node_type === 'string'
+        ? 'observed'
+        : 'not-run';
+
+  return (
+    <Card
+      size="small"
+      className={`floating-node-panel ${isActive ? 'is-active' : ''}`}
+      title={
+        <div className="floating-node-panel-header">
+          <Typography.Text strong>{node.data.label}</Typography.Text>
+          <Space size={6} wrap>
+            <Tag color="blue">{node.id}</Tag>
+            <Tag>{node.data.nodeType}</Tag>
+            <Tag color={nodeStatus === 'success' ? 'green' : nodeStatus === 'failed' ? 'red' : nodeStatus === 'not-run' ? 'default' : 'orange'}>
+              {String(nodeStatus).toUpperCase()}
+            </Tag>
+          </Space>
+        </div>
+      }
+      extra={
+        <Space size={6}>
+          <Button size="small" loading={replayLoading} onClick={() => onReplayNode(node.id)}>
+            Replay Node
+          </Button>
+          <Button type="text" size="small" icon={<CloseOutlined />} onClick={onClosePanel} />
+        </Space>
+      }
+    >
+      <Form layout="vertical" form={form} onValuesChange={onFormValuesChange}>
+        <Form.Item label="Label" name="label" rules={[{ required: true }]}>
+          <Input />
+        </Form.Item>
+        {renderNodeConfigFields(node, authOptions, parameterEntries, authEntries, form)}
+      </Form>
+
+      {node.data.nodeType === 'python_request' || node.data.nodeType === 'start_python' ? (
+        <div>
+          <Typography.Text strong>Python Code</Typography.Text>
+          <CodeEditor value={pythonCode} onChange={onPythonCodeChange} />
+        </div>
+      ) : null}
+
+      <Divider style={{ margin: '12px 0' }} />
+      <Typography.Text strong>Debug State</Typography.Text>
+      <pre className="execution-context">
+        {JSON.stringify(nodeDebugState ?? { note: 'No debug state yet for this node.' }, null, 2)}
+      </pre>
+
+      <Typography.Text strong>Node Events</Typography.Text>
+      <pre className="execution-context">{JSON.stringify(nodeDebugEvents, null, 2)}</pre>
+
+      <Typography.Text strong>Last Replay</Typography.Text>
+      <pre className="execution-context">
+        {JSON.stringify(replayResult ?? { note: 'No replay result yet.' }, null, 2)}
+      </pre>
+    </Card>
+  );
+}
+
 export default function App() {
+  const blurFocusedElement = useCallback(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    const active = document.activeElement;
+    if (active instanceof HTMLElement) {
+      active.blur();
+    }
+  }, []);
+
   const [nodes, setNodes] = useState<ApiNode[]>(initialNodes);
   const [edges, setEdges] = useState<ApiEdge[]>(initialEdges);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [openNodePanelIds, setOpenNodePanelIds] = useState<string[]>([]);
+  const [activePanelNodeId, setActivePanelNodeId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [saveModalOpen, setSaveModalOpen] = useState(false);
-  const [runDrawerOpen, setRunDrawerOpen] = useState(false);
   const [proximityEnabled, setProximityEnabled] = useState(true);
   const [paletteQuery, setPaletteQuery] = useState('');
-  const [pythonCode, setPythonCode] = useState('');
   const [workflowName, setWorkflowName] = useState('API Workflow');
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>();
   const [selectedWorkflowVersionId, setSelectedWorkflowVersionId] = useState<string>();
   const [workflowOptions, setWorkflowOptions] = useState<WorkflowSummary[]>([]);
   const [workflowVersions, setWorkflowVersions] = useState<WorkflowVersionSummary[]>([]);
-  const [runInputJson, setRunInputJson] = useState('{\n  "token": "demo-token"\n}');
+  const [runInputJson] = useState('{\n  "token": "demo-token"\n}');
   const [activeExecution, setActiveExecution] = useState<ExecutionOutPayload | null>(null);
   const [executionEvents, setExecutionEvents] = useState<ExecutionEventPayload[]>([]);
+  const [replayResults, setReplayResults] = useState<Record<string, ReplayResult>>({});
+  const [replayLoadingByNode, setReplayLoadingByNode] = useState<Record<string, boolean>>({});
   const [isRunningFlow, setIsRunningFlow] = useState(false);
   const [isRefreshingExecution, setIsRefreshingExecution] = useState(false);
   const [lastSavedSignature, setLastSavedSignature] = useState<string>('');
   const [isPersisting, setIsPersisting] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
 
-  const [form] = Form.useForm<NodeFormValues>();
   const [saveForm] = Form.useForm<SaveFormValues>();
-  const parameterEntries = (Form.useWatch('parametersList', form) as ParameterItem[] | undefined) ?? [];
-  const authEntries = (Form.useWatch('authList', form) as AuthItem[] | undefined) ?? [];
   const nodeCounterRef = useRef(4);
   const edgeCounterRef = useRef(1000);
   const nodesRef = useRef<ApiNode[]>(initialNodes);
   const edgesRef = useRef<ApiEdge[]>(initialEdges);
+  const panelDraftReadersRef = useRef(
+    new Map<string, () => { values: NodeFormValues; pythonCode: string }>(),
+  );
+  const panelDraftsRef = useRef(new Map<string, { values: NodeFormValues; pythonCode: string }>());
 
   const nodeTypes = useMemo(() => ({ apiNode: FlowNode }), []);
   const edgeTypes = useMemo(() => ({ breakpoint: BreakpointEdge }), []);
 
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) ?? null,
-    [nodes, selectedNodeId],
+  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const panelNodes = useMemo(
+    () => openNodePanelIds.map((id) => nodeById.get(id)).filter((node): node is ApiNode => Boolean(node)),
+    [nodeById, openNodePanelIds],
   );
-  const selectedNodeHelp = useMemo(
-    () => (selectedNode ? NODE_HELP[selectedNode.data.nodeType] : null),
-    [selectedNode],
-  );
+  const executionContextNodes = useMemo(() => {
+    const context = activeExecution?.final_context_json;
+    if (!context || typeof context !== 'object') {
+      return {} as Record<string, Record<string, unknown>>;
+    }
+    const ctxNodes = (context as Record<string, unknown>).nodes;
+    return ctxNodes && typeof ctxNodes === 'object'
+      ? (ctxNodes as Record<string, Record<string, unknown>>)
+      : {};
+  }, [activeExecution?.final_context_json]);
+  const visitedNodeIds = useMemo(() => {
+    const visited = new Set<string>();
+    executionEvents.forEach((event) => {
+      if (event.node_id) {
+        visited.add(event.node_id);
+      }
+    });
+    return visited;
+  }, [executionEvents]);
+  const nodeEventsById = useMemo(() => {
+    const grouped = new Map<string, ExecutionEventPayload[]>();
+    executionEvents.forEach((event) => {
+      if (!event.node_id) {
+        return;
+      }
+      const arr = grouped.get(event.node_id) ?? [];
+      arr.push(event);
+      grouped.set(event.node_id, arr);
+    });
+    return grouped;
+  }, [executionEvents]);
   const renderNodes = useMemo(() => {
     const isActive =
       activeExecution &&
-      ['queued', 'running', 'paused'].includes(activeExecution.status) &&
-      activeExecution.current_node_id;
+      ['queued', 'running', 'paused', 'completed', 'failed', 'aborted'].includes(activeExecution.status);
     if (!isActive) {
       return nodes;
     }
@@ -1295,11 +1559,12 @@ export default function App() {
         ...node.data,
         runtime: {
           ...node.data.runtime,
+          isVisited: visitedNodeIds.has(node.id),
           isCurrent: node.id === activeExecution.current_node_id,
         },
       },
     }));
-  }, [activeExecution, nodes]);
+  }, [activeExecution, nodes, visitedNodeIds]);
 
   const refreshWorkflows = useCallback(async () => {
     const workflows = await apiRequest<WorkflowSummary[]>('/workflows');
@@ -1315,7 +1580,11 @@ export default function App() {
   const loadWorkflowVersion = useCallback(async (workflowVersionId: string) => {
     const detail = await apiRequest<WorkflowVersionDetail>(`/workflow-versions/${workflowVersionId}`);
     const flow = applyGraphJson(detail.graph_json);
-    const loadedSignature = graphSignature(buildGraphJson(flow.nodes, flow.edges));
+    const loadedSignature = graphSignature(buildGraphJson(flow.nodes, flow.edges), { ignoreBreakpoint: true });
+    panelDraftReadersRef.current.clear();
+    panelDraftsRef.current.clear();
+    nodesRef.current = flow.nodes;
+    edgesRef.current = flow.edges;
     setNodes(flow.nodes);
     setEdges(flow.edges);
     setSelectedWorkflowId(detail.workflow_id);
@@ -1334,7 +1603,7 @@ export default function App() {
   }, [edges]);
 
   useEffect(() => {
-    const signature = graphSignature(buildGraphJson(nodes, edges));
+    const signature = graphSignature(buildGraphJson(nodes, edges), { ignoreBreakpoint: true });
     setIsDirty(lastSavedSignature !== '' && signature !== lastSavedSignature);
   }, [edges, lastSavedSignature, nodes]);
 
@@ -1362,27 +1631,19 @@ export default function App() {
       setWorkflowName(selectedWorkflow.name);
     }
 
-    refreshWorkflowVersions(selectedWorkflowId).catch((error: unknown) => {
-      message.error(`Failed to load versions: ${String(error)}`);
-    });
+    refreshWorkflowVersions(selectedWorkflowId)
+      .then((versions) => {
+        setSelectedWorkflowVersionId((current) => {
+          if (current && versions.some((version) => version.id === current)) {
+            return current;
+          }
+          return versions[0]?.id;
+        });
+      })
+      .catch((error: unknown) => {
+        message.error(`Failed to load versions: ${String(error)}`);
+      });
   }, [refreshWorkflowVersions, selectedWorkflowId, workflowOptions]);
-
-  useEffect(() => {
-    if (!selectedNode) {
-      form.resetFields();
-      setPythonCode('');
-      return;
-    }
-
-    const formValues = configToFormValues(selectedNode);
-    form.setFieldsValue(formValues);
-
-    if (selectedNode.data.nodeType === 'python_request' || selectedNode.data.nodeType === 'start_python') {
-      setPythonCode(toStringValue(selectedNode.data.config.code));
-    } else {
-      setPythonCode('');
-    }
-  }, [form, selectedNode]);
 
   const filteredTemplates = useMemo(() => {
     const q = paletteQuery.trim().toLowerCase();
@@ -1681,6 +1942,10 @@ export default function App() {
         .map((change) => change.id);
 
       if (removedIds.length > 0) {
+        removedIds.forEach((id) => {
+          panelDraftReadersRef.current.delete(id);
+          panelDraftsRef.current.delete(id);
+        });
         const baseEdges = edgesRef.current.filter((edge) => edge.className !== 'temp-proximity-edge');
         const nextEdges = reconnectAroundDeletedNodes(removedIds, nodesRef.current, baseEdges);
         setEdges(nextEdges);
@@ -1893,7 +2158,11 @@ export default function App() {
       return [...current, nextNode];
     });
 
-    setSelectedNodeId(nextId);
+    setOpenNodePanelIds((current) => {
+      const next = [...current.filter((id) => id !== nextId), nextId];
+      return next.length > 2 ? next.slice(next.length - 2) : next;
+    });
+    setActivePanelNodeId(nextId);
     setPaletteOpen(false);
   }, []);
 
@@ -1911,8 +2180,8 @@ export default function App() {
   }, [saveForm, selectedWorkflowId, workflowName, workflowOptions]);
 
   const onConfirmSave = useCallback(async () => {
-    const graph = buildGraphJson(nodes, edges);
-    const currentSignature = graphSignature(graph);
+    const graph = buildGraphJson(nodesRef.current, edgesRef.current);
+    const currentSignature = graphSignature(graph, { ignoreBreakpoint: true });
 
     if (currentSignature === lastSavedSignature) {
       message.info('No changes detected since last save.');
@@ -1971,16 +2240,7 @@ export default function App() {
     } finally {
       setIsPersisting(false);
     }
-  }, [
-    edges,
-    lastSavedSignature,
-    nodes,
-    refreshWorkflowVersions,
-    refreshWorkflows,
-    saveForm,
-    selectedWorkflowId,
-    workflowName,
-  ]);
+  }, [lastSavedSignature, refreshWorkflowVersions, refreshWorkflows, saveForm, selectedWorkflowId, workflowName]);
 
   const onLoadSelectedVersion = useCallback(async () => {
     if (!selectedWorkflowVersionId) {
@@ -2014,69 +2274,8 @@ export default function App() {
     }
   }, [isDirty, loadWorkflowVersion, selectedWorkflowVersionId]);
 
-  const onFormValuesChange = useCallback(
-    (_: Partial<NodeFormValues>, allValues: NodeFormValues) => {
-      if (!selectedNodeId) {
-        return;
-      }
-
-      setNodes((current) =>
-        current.map((node) => {
-          if (node.id !== selectedNodeId) {
-            return node;
-          }
-
-          const nextLabel = allValues.label ?? node.data.label;
-          const nextConfig = buildConfigFromValues(node, allValues, pythonCode);
-
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              label: nextLabel,
-              config: nextConfig,
-            },
-          };
-        }),
-      );
-    },
-    [pythonCode, selectedNodeId],
-  );
-
-  const onPythonCodeChange = useCallback(
-    (nextCode: string) => {
-      setPythonCode(nextCode);
-      if (!selectedNodeId) {
-        return;
-      }
-
-      setNodes((current) =>
-        current.map((node) => {
-          if (
-            node.id !== selectedNodeId ||
-            (node.data.nodeType !== 'python_request' && node.data.nodeType !== 'start_python')
-          ) {
-            return node;
-          }
-
-          return {
-            ...node,
-            data: {
-              ...node.data,
-              config: {
-                ...node.data.config,
-                code: nextCode,
-              },
-            },
-          };
-        }),
-      );
-    },
-    [selectedNodeId],
-  );
-
   const onValidateGraph = useCallback(() => {
-    const errors = validateGraph(nodes, edges);
+    const errors = validateGraph(nodesRef.current, edgesRef.current);
     if (errors.length === 0) {
       Modal.success({
         title: 'Graph Validation Passed',
@@ -2096,7 +2295,7 @@ export default function App() {
         </ul>
       ),
     });
-  }, [edges, nodes]);
+  }, []);
 
   const refreshExecutionState = useCallback(async (executionId: string) => {
     const [execution, events] = await Promise.all([
@@ -2108,27 +2307,97 @@ export default function App() {
     return execution;
   }, []);
 
+  const openNodePanel = useCallback((nodeId: string) => {
+    setOpenNodePanelIds((current) => {
+      const next = [...current.filter((id) => id !== nodeId), nodeId];
+      return next.length > 2 ? next.slice(next.length - 2) : next;
+    });
+    setActivePanelNodeId(nodeId);
+  }, []);
+
+  const closeNodePanel = useCallback((nodeId: string) => {
+    setOpenNodePanelIds((current) => current.filter((id) => id !== nodeId));
+    setActivePanelNodeId((current) => (current === nodeId ? null : current));
+  }, []);
+
+  const patchNode = useCallback((nodeId: string, label: string, config: Record<string, unknown>) => {
+    const next = nodesRef.current.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                label,
+                config,
+              },
+            }
+          : node,
+    );
+    nodesRef.current = next;
+    setNodes(next);
+  }, []);
+
+  const onRegisterDraftReader = useCallback(
+    (
+      nodeId: string,
+      reader: (() => { values: NodeFormValues; pythonCode: string }) | null,
+    ) => {
+      if (reader) {
+        panelDraftReadersRef.current.set(nodeId, reader);
+      } else {
+        panelDraftReadersRef.current.delete(nodeId);
+      }
+    },
+    [],
+  );
+
+  const onDraftChange = useCallback((nodeId: string, draft: { values: NodeFormValues; pythonCode: string }) => {
+    panelDraftsRef.current.set(nodeId, draft);
+  }, []);
+
+  const flushPanelDraftsToRefs = useCallback(() => {
+    let changed = false;
+    const readers = panelDraftReadersRef.current;
+    const drafts = panelDraftsRef.current;
+    if (readers.size === 0 && drafts.size === 0) {
+      return;
+    }
+
+    const nextNodes = nodesRef.current.map((node) => {
+      const reader = readers.get(node.id);
+      const draft = reader ? reader() : drafts.get(node.id);
+      if (!draft) {
+        return node;
+      }
+      const { values, pythonCode } = draft;
+      const nextLabel = (values.label ?? node.data.label).toString();
+      const nextConfig = buildConfigFromValues(node, values, pythonCode);
+      const labelChanged = nextLabel !== node.data.label;
+      const configChanged = JSON.stringify(nextConfig) !== JSON.stringify(node.data.config);
+      if (!labelChanged && !configChanged) {
+        return node;
+      }
+      changed = true;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          label: nextLabel,
+          config: nextConfig,
+        },
+      };
+    });
+
+    if (changed) {
+      nodesRef.current = nextNodes;
+      setNodes(nextNodes);
+    }
+  }, []);
+
   const onStartExecution = useCallback(async () => {
     if (!selectedWorkflowVersionId && !selectedWorkflowId) {
       message.warning('Select a workflow and version before running.');
       return;
-    }
-
-    if (isDirty) {
-      const confirmed = await new Promise<boolean>((resolve) => {
-        Modal.confirm({
-          title: 'Run last saved version?',
-          content:
-            'You have unsaved canvas changes. Play will run the selected saved workflow version, not unsaved edits.',
-          okText: 'Run Saved Version',
-          cancelText: 'Cancel',
-          onOk: () => resolve(true),
-          onCancel: () => resolve(false),
-        });
-      });
-      if (!confirmed) {
-        return;
-      }
     }
 
     let parsedInput: Record<string, unknown>;
@@ -2146,10 +2415,21 @@ export default function App() {
 
     setIsRunningFlow(true);
     try {
+      // Force-commit any active in-panel input before serializing graph for debug.
+      if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      await new Promise<void>((resolve) => {
+        window.setTimeout(() => resolve(), 0);
+      });
+      flushPanelDraftsToRefs();
+
+      const graph = buildGraphJson(nodesRef.current, edgesRef.current);
       const body =
         selectedWorkflowVersionId
           ? {
               workflow_version_id: selectedWorkflowVersionId,
+              graph_json: graph,
               input_json: parsedInput,
               debug_mode: true,
               trigger_type: 'manual',
@@ -2158,6 +2438,7 @@ export default function App() {
           : {
               workflow_id: selectedWorkflowId,
               published_only: false,
+              graph_json: graph,
               input_json: parsedInput,
               debug_mode: true,
               trigger_type: 'manual',
@@ -2168,7 +2449,6 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify(body),
       });
-      setRunDrawerOpen(true);
       await refreshExecutionState(execution.id);
       message.success(`Execution ${execution.id.slice(0, 8)} started.`);
     } catch (error) {
@@ -2176,7 +2456,7 @@ export default function App() {
     } finally {
       setIsRunningFlow(false);
     }
-  }, [isDirty, refreshExecutionState, runInputJson, selectedWorkflowId, selectedWorkflowVersionId]);
+  }, [flushPanelDraftsToRefs, refreshExecutionState, runInputJson, selectedWorkflowId, selectedWorkflowVersionId]);
 
   const onRefreshExecution = useCallback(async () => {
     if (!activeExecution?.id) {
@@ -2213,8 +2493,118 @@ export default function App() {
     [activeExecution?.id, refreshExecutionState],
   );
 
+  const onReplayNode = useCallback(
+    async (nodeId: string) => {
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node) {
+        return;
+      }
+      if (!['start_request', 'form_request', 'paginate_request'].includes(node.data.nodeType)) {
+        message.info('Replay Node currently supports request nodes.');
+        return;
+      }
+
+      let inputVars: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(runInputJson);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          inputVars = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Ignore parse errors for replay context; request still can run.
+      }
+      const templateContext = { vars: inputVars, input: inputVars };
+      const renderString = (value: string): string =>
+        value.replace(/{{\s*([^}]+)\s*}}/g, (_, expr: string) => {
+          const resolved = resolveDataPath(templateContext, expr.trim());
+          return resolved == null ? '' : String(resolved);
+        });
+
+      const method = toStringValue(node.data.config.method, 'GET').toUpperCase();
+      const url = renderString(toStringValue(node.data.config.url, ''));
+      const headersRaw = node.data.config.headers;
+      const headers: Record<string, string> =
+        headersRaw && typeof headersRaw === 'object'
+          ? Object.fromEntries(
+              Object.entries(headersRaw as Record<string, unknown>).map(([k, v]) => [k, renderString(String(v))]),
+            )
+          : {};
+
+      const authRef = toStringValue(node.data.config.authRef);
+      if (authRef.includes('::')) {
+        const [authNodeId, authName] = authRef.split('::');
+        const authNode = nodesRef.current.find((n) => n.id === authNodeId);
+        if (authNode && authNode.data.nodeType === 'auth') {
+          const authList = Array.isArray(authNode.data.config.authList)
+            ? (authNode.data.config.authList as AuthItem[])
+            : [];
+          const authEntry = authList.find((entry) => (entry.name ?? '') === authName) ?? authList[0];
+          if (authEntry) {
+            const headerName = authEntry.headerName || 'Authorization';
+            const tokenVar = authEntry.tokenVar || 'vars.token';
+            const token = resolveDataPath(templateContext, tokenVar);
+            if (token != null && token !== '') {
+              headers[headerName] =
+                (authEntry.authType ?? 'bearer') === 'bearer' ? `Bearer ${String(token)}` : String(token);
+            }
+          }
+        }
+      }
+
+      let body: unknown = node.data.config.body;
+      if (typeof body === 'string') {
+        body = renderString(body);
+      }
+      if (body && typeof body === 'object') {
+        body = JSON.parse(renderString(JSON.stringify(body)));
+      }
+
+      setReplayLoadingByNode((current) => ({ ...current, [nodeId]: true }));
+      try {
+        const response = await fetch(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            ...headers,
+          },
+          body: method === 'GET' || method === 'DELETE' ? undefined : body ? JSON.stringify(body) : undefined,
+        });
+        const text = await response.text();
+        let parsedBody: unknown = text;
+        try {
+          parsedBody = text ? JSON.parse(text) : null;
+        } catch {
+          parsedBody = text;
+        }
+        setReplayResults((current) => ({
+          ...current,
+          [nodeId]: {
+            startedAt: new Date().toISOString(),
+            request: { method, url, headers, body },
+            response: {
+              status: response.status,
+              body: parsedBody,
+            },
+          },
+        }));
+      } catch (error) {
+        setReplayResults((current) => ({
+          ...current,
+          [nodeId]: {
+            startedAt: new Date().toISOString(),
+            request: { method, url, headers, body },
+            error: String(error),
+          },
+        }));
+      } finally {
+        setReplayLoadingByNode((current) => ({ ...current, [nodeId]: false }));
+      }
+    },
+    [runInputJson],
+  );
+
   useEffect(() => {
-    if (!runDrawerOpen || !activeExecution?.id) {
+    if (!activeExecution?.id) {
       return;
     }
     if (!['queued', 'running', 'paused'].includes(activeExecution.status)) {
@@ -2224,7 +2614,7 @@ export default function App() {
       refreshExecutionState(activeExecution.id).catch(() => undefined);
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [activeExecution?.id, activeExecution?.status, refreshExecutionState, runDrawerOpen]);
+  }, [activeExecution?.id, activeExecution?.status, refreshExecutionState]);
 
   return (
     <Layout className="app-layout">
@@ -2242,8 +2632,13 @@ export default function App() {
           <Button type="primary" onClick={() => setPaletteOpen(true)}>
             Open Command Palette
           </Button>
-          <Button type="primary" loading={isRunningFlow} onClick={() => void onStartExecution()}>
-            Play
+          <Button
+            type="primary"
+            loading={isRunningFlow}
+            onMouseDown={blurFocusedElement}
+            onClick={() => void onStartExecution()}
+          >
+            Debug
           </Button>
         </Space>
       </Header>
@@ -2296,8 +2691,13 @@ export default function App() {
               <Button type="primary" block loading={isPersisting} onClick={onOpenSaveModal}>
                 Save Version
               </Button>
-              <Button block loading={isRunningFlow} onClick={() => void onStartExecution()}>
-                Play Selected Version
+              <Button
+                block
+                loading={isRunningFlow}
+                onMouseDown={blurFocusedElement}
+                onClick={() => void onStartExecution()}
+              >
+                Debug Selected Version
               </Button>
             </Space>
           </Card>
@@ -2339,8 +2739,10 @@ export default function App() {
             onConnect={onConnect}
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDragStop}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-            onPaneClick={() => setSelectedNodeId(null)}
+            onNodeClick={(_, node) => {
+              openNodePanel(node.id);
+            }}
+            onPaneClick={() => setActivePanelNodeId(null)}
             fitView
             defaultEdgeOptions={{ type: 'breakpoint' }}
           >
@@ -2351,71 +2753,88 @@ export default function App() {
               <Button onClick={() => setPaletteOpen(true)}>+ Node</Button>
             </Panel>
           </ReactFlow>
-        </Content>
 
-        <Sider width={360} theme="light" className="right-sider">
-          <Card title="Inspector" size="small" className="inspector-card">
-            {!selectedNode ? (
-              <Typography.Text type="secondary">
-                Select a node to edit label and config.
-              </Typography.Text>
-            ) : (
-              <>
-                <Space orientation="vertical" style={{ width: '100%', marginBottom: 16 }} size="small">
-                  <div>
-                    <Typography.Text strong>Node</Typography.Text>
-                    <div>
-                      <Tag>{selectedNode.data.nodeType}</Tag>
-                      <Typography.Text type="secondary">{selectedNode.id}</Typography.Text>
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<CopyOutlined />}
-                        onClick={() => navigator.clipboard.writeText(selectedNode.id)}
-                      >
-                        Copy ID
-                      </Button>
-                    </div>
-                  </div>
+          {activeExecution && ['queued', 'running', 'paused'].includes(activeExecution.status) ? (
+            <div className="floating-debug-controls">
+              <Card size="small" className="debug-toolbar-card">
+                <Space size={8} wrap>
+                  <Tag color={activeExecution.status === 'paused' ? 'orange' : 'blue'}>
+                    {activeExecution.status.toUpperCase()}
+                  </Tag>
+                  <Typography.Text type="secondary">
+                    {activeExecution.current_node_id ? `Node: ${activeExecution.current_node_id}` : 'Node: n/a'}
+                  </Typography.Text>
+                  <Tooltip title="Refresh">
+                    <Button
+                      icon={<SyncOutlined />}
+                      loading={isRefreshingExecution}
+                      onClick={() => void onRefreshExecution()}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Continue">
+                    <Button
+                      icon={<CaretRightOutlined />}
+                      disabled={activeExecution.status !== 'paused'}
+                      loading={isRefreshingExecution}
+                      onClick={() => void onDebugCommand('resume')}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Step">
+                    <Button
+                      icon={<StepForwardOutlined />}
+                      disabled={activeExecution.status !== 'paused'}
+                      loading={isRefreshingExecution}
+                      onClick={() => void onDebugCommand('step')}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Stop">
+                    <Button
+                      danger
+                      icon={<StopOutlined />}
+                      disabled={!['paused', 'running', 'queued'].includes(activeExecution.status)}
+                      loading={isRefreshingExecution}
+                      onClick={() => void onDebugCommand('abort')}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Replay Selected Node">
+                    <Button
+                      icon={<RedoOutlined />}
+                      disabled={!activePanelNodeId}
+                      loading={Boolean(activePanelNodeId && replayLoadingByNode[activePanelNodeId])}
+                      onClick={() => {
+                        if (activePanelNodeId) {
+                          void onReplayNode(activePanelNodeId);
+                        }
+                      }}
+                    />
+                  </Tooltip>
                 </Space>
+              </Card>
+            </div>
+          ) : null}
 
-                {selectedNodeHelp ? (
-                  <Alert
-                    className="node-help-alert"
-                    type="info"
-                    showIcon
-                    message={selectedNodeHelp.title}
-                    description={
-                      <div>
-                        <div>{selectedNodeHelp.description}</div>
-                        <ul className="node-help-list">
-                          {selectedNodeHelp.references.map((line) => (
-                            <li key={line}>{line}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    }
-                  />
-                ) : null}
-
-                <Form layout="vertical" form={form} onValuesChange={onFormValuesChange}>
-                  <Form.Item label="Label" name="label" rules={[{ required: true }]}>
-                    <Input />
-                  </Form.Item>
-
-                  {renderNodeConfigFields(selectedNode, authOptions, parameterEntries, authEntries)}
-                </Form>
-
-                {selectedNode.data.nodeType === 'python_request' || selectedNode.data.nodeType === 'start_python' ? (
-                  <div>
-                    <Typography.Text strong>Python Code</Typography.Text>
-                    <CodeEditor value={pythonCode} onChange={onPythonCodeChange} />
-                  </div>
-                ) : null}
-              </>
-            )}
-          </Card>
-        </Sider>
+          {panelNodes.length > 0 ? (
+            <div className={`floating-node-panels floating-node-panels-${panelNodes.length}`}>
+              {panelNodes.map((node) => (
+                <NodeFloatingPanel
+                  key={node.id}
+                  node={node}
+                  authOptions={authOptions}
+                  nodeDebugState={executionContextNodes[node.id] ?? null}
+                  nodeDebugEvents={nodeEventsById.get(node.id) ?? []}
+                  replayResult={replayResults[node.id]}
+                  replayLoading={Boolean(replayLoadingByNode[node.id])}
+                  isActive={activePanelNodeId === node.id}
+                  onRegisterDraftReader={onRegisterDraftReader}
+                  onDraftChange={onDraftChange}
+                  onPatchNode={patchNode}
+                  onReplayNode={(nodeId) => void onReplayNode(nodeId)}
+                  onClose={closeNodePanel}
+                />
+              ))}
+            </div>
+          ) : null}
+        </Content>
       </Layout>
 
       <Drawer
@@ -2511,100 +2930,6 @@ export default function App() {
         </Button>
       </Drawer>
 
-      <Drawer
-        title="Run & Debug"
-        size="large"
-        open={runDrawerOpen}
-        onClose={() => setRunDrawerOpen(false)}
-      >
-        <Space orientation="vertical" style={{ width: '100%' }} size={12}>
-          <Typography.Text strong>Execution Input JSON</Typography.Text>
-          <Input.TextArea
-            rows={7}
-            value={runInputJson}
-            onChange={(event) => setRunInputJson(event.target.value)}
-            placeholder='{"token":"demo-token"}'
-          />
-          <Space>
-            <Button type="primary" loading={isRunningFlow} onClick={() => void onStartExecution()}>
-              Start New Run
-            </Button>
-            <Button loading={isRefreshingExecution} onClick={() => void onRefreshExecution()}>
-              Refresh
-            </Button>
-          </Space>
-
-          {activeExecution ? (
-            <>
-              <Divider style={{ margin: '8px 0' }} />
-              <div>
-                <Tag color={activeExecution.status === 'completed' ? 'green' : activeExecution.status === 'failed' ? 'red' : activeExecution.status === 'paused' ? 'orange' : 'blue'}>
-                  {activeExecution.status.toUpperCase()}
-                </Tag>
-                <Typography.Text code>{activeExecution.id}</Typography.Text>
-              </div>
-              <Typography.Text type="secondary">
-                Current Node: {activeExecution.current_node_id ?? 'n/a'}
-              </Typography.Text>
-
-              <Space>
-                <Button
-                  disabled={activeExecution.status !== 'paused'}
-                  loading={isRefreshingExecution}
-                  onClick={() => void onDebugCommand('resume')}
-                >
-                  Resume
-                </Button>
-                <Button
-                  disabled={activeExecution.status !== 'paused'}
-                  loading={isRefreshingExecution}
-                  onClick={() => void onDebugCommand('step')}
-                >
-                  Step
-                </Button>
-                <Button
-                  danger
-                  disabled={!['paused', 'running', 'queued'].includes(activeExecution.status)}
-                  loading={isRefreshingExecution}
-                  onClick={() => void onDebugCommand('abort')}
-                >
-                  Abort
-                </Button>
-              </Space>
-
-              <Typography.Text strong>Events</Typography.Text>
-              <div className="execution-events">
-                {executionEvents.length === 0 ? (
-                  <Typography.Text type="secondary">No events yet.</Typography.Text>
-                ) : (
-                  executionEvents
-                    .slice()
-                    .reverse()
-                    .map((event) => (
-                      <div key={event.id} className="execution-event-item">
-                        <Typography.Text code>
-                          #{event.event_index} {event.event_type}
-                        </Typography.Text>
-                        {event.node_id ? <Typography.Text type="secondary"> node: {event.node_id}</Typography.Text> : null}
-                      </div>
-                    ))
-                )}
-              </div>
-
-              {activeExecution.final_context_json ? (
-                <>
-                  <Typography.Text strong>Final Context</Typography.Text>
-                  <pre className="execution-context">
-                    {JSON.stringify(activeExecution.final_context_json, null, 2)}
-                  </pre>
-                </>
-              ) : null}
-            </>
-          ) : (
-            <Alert type="info" showIcon message="No active execution yet. Start a run to use debug controls." />
-          )}
-        </Space>
-      </Drawer>
     </Layout>
   );
 }

@@ -115,6 +115,7 @@ def repo_state(monkeypatch: pytest.MonkeyPatch) -> RepoState:
         *,
         workflow_version_id: UUID,
         input_json: dict[str, Any],
+        effective_graph_json: dict[str, Any] | None,
         debug_mode: bool,
         parent_execution_id: UUID | None,
         trigger_type: str | None,
@@ -133,6 +134,7 @@ def repo_state(monkeypatch: pytest.MonkeyPatch) -> RepoState:
             "parent_execution_id": parent_execution_id,
             "trigger_type": trigger_type,
             "trigger_payload": trigger_payload,
+            "effective_graph_json": effective_graph_json,
             "idempotency_key": idempotency_key,
             "correlation_id": correlation_id,
         }

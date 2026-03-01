@@ -28,6 +28,7 @@ class ExecutionCreate(BaseModel):
     workflow_version_id: UUID | None = None
     workflow_id: UUID | None = None
     published_only: bool = True
+    graph_json: dict[str, Any] | None = None
     input_json: dict[str, Any] = Field(default_factory=dict)
     debug_mode: bool = False
     trigger_type: str | None = None

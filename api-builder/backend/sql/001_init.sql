@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS api.executions (
   debug_mode BOOLEAN NOT NULL DEFAULT FALSE,
   current_node_id TEXT,
   input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  effective_graph_json JSONB,
   final_context_json JSONB,
   parent_execution_id UUID REFERENCES api.executions(id) ON DELETE SET NULL,
   trigger_type TEXT,

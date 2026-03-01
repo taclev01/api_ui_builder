@@ -33,6 +33,7 @@ def postgres_connection() -> Any:
         with conn.cursor() as cur:
             cur.execute((sql_root / "001_init.sql").read_text())
             cur.execute((sql_root / "003_workflow_version_metadata.sql").read_text())
+            cur.execute((sql_root / "004_execution_effective_graph.sql").read_text())
         conn.commit()
         yield conn
     finally:
@@ -103,6 +104,7 @@ def test_engine_run_persists_events_and_saved_output(
         conn,
         workflow_version_id=version["id"],
         input_json={"seed": "data"},
+        effective_graph_json=version["graph_json"],
         debug_mode=False,
         parent_execution_id=None,
         trigger_type="manual",

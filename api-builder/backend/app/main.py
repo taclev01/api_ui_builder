@@ -126,6 +126,11 @@ def create_execution(payload: ExecutionCreate) -> Any:
         workflow_version = _resolve_workflow_version_for_execution(conn, payload)
         if not workflow_version:
             raise HTTPException(status_code=404, detail="Workflow version not found")
+        if payload.graph_json is not None:
+            workflow_version = {
+                **workflow_version,
+                "graph_json": payload.graph_json,
+            }
 
         if payload.idempotency_key:
             existing = repo.get_execution_by_idempotency_key(conn, payload.idempotency_key)
@@ -136,6 +141,7 @@ def create_execution(payload: ExecutionCreate) -> Any:
             conn,
             workflow_version_id=workflow_version["id"],
             input_json=payload.input_json,
+            effective_graph_json=workflow_version.get("graph_json"),
             debug_mode=payload.debug_mode,
             parent_execution_id=payload.parent_execution_id,
             trigger_type=payload.trigger_type,
@@ -231,6 +237,12 @@ def _debug_command(run_id: UUID, cmd: DebugCommand) -> Any:
         workflow_version = repo.get_workflow_version(conn, execution["workflow_version_id"])
         if not workflow_version:
             raise HTTPException(status_code=404, detail="Workflow version not found")
+        effective_graph_json = execution.get("effective_graph_json")
+        if isinstance(effective_graph_json, dict):
+            workflow_version = {
+                **workflow_version,
+                "graph_json": effective_graph_json,
+            }
 
         continue_execution_from_pause(
             conn,
